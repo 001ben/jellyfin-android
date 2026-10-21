@@ -11,8 +11,11 @@ import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.MergingMediaSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.jellyfin.mobile.app.AppPreferences
 import org.jellyfin.mobile.data.dao.DownloadDao
 import org.jellyfin.mobile.downloads.DownloadFileType
+import org.jellyfin.mobile.downloads.DownloadStatus
+import org.jellyfin.mobile.downloads.smart.SmartOfflineManager
 import org.jellyfin.mobile.player.PlayerException
 import org.jellyfin.mobile.player.PlayerViewModel
 import org.jellyfin.mobile.player.deviceprofile.DeviceProfileBuilder
@@ -33,6 +36,7 @@ import org.jellyfin.sdk.model.api.MediaStream
 import org.jellyfin.sdk.model.api.MediaStreamProtocol
 import org.jellyfin.sdk.model.api.MediaStreamType
 import org.jellyfin.sdk.model.api.PlayMethod
+import org.jellyfin.sdk.model.extensions.ticks
 import org.jellyfin.sdk.model.serializer.toUUIDOrNull
 import org.koin.core.component.KoinComponent
 import org.koin.core.component.get
@@ -118,7 +122,11 @@ class QueueManager(
         playWhenReady: Boolean = true,
     ): PlayerException? {
         val download = withContext(Dispatchers.IO) {
-            downloadDao.getDownloadByItemId(itemId)
+            val preferences: AppPreferences = get()
+            downloadDao.getDownloadsByItemIds(listOf(itemId)).firstOrNull {
+                it.serverId == preferences.currentServerId && it.userId == preferences.currentUserId &&
+                    it.status == DownloadStatus.DOWNLOADED
+            }
         } ?: return PlayerException.UnsupportedContent()
 
         val files = withContext(Dispatchers.IO) {
@@ -131,13 +139,16 @@ class QueueManager(
             itemId = download.itemId,
             item = download.item,
             sourceInfo = download.item.mediaSources!!.first(),
-            playSessionId = download.id.toString(),
+            playSessionId = UUID.randomUUID().toString(),
             playbackDetails = PlaybackDetails(startTime, audioStreamIndex, subtitleStreamIndex),
             remoteFileUri = mainFile.uri,
+            downloadId = download.id,
         )
-        startTime?.let { duration -> mediaSource.startTime = duration }
+        mediaSource.startTime = startTime ?: (download.item.userData?.playbackPositionTicks ?: 0).ticks
         audioStreamIndex?.let { index -> mediaSource.selectAudioStream(mediaSource.audioStreams[index]) }
         subtitleStreamIndex?.let { index -> mediaSource.selectSubtitleStream(mediaSource.subtitleStreams[index]) }
+        val offline: SmartOfflineManager = get()
+        if (!withContext(Dispatchers.IO) { offline.started(download.id, mediaSource.playSessionId) }) return PlayerException.NetworkFailure()
 
         _currentMediaSource.value = mediaSource
 
@@ -175,8 +186,8 @@ class QueueManager(
             enableDirectStream = enableDirectStream,
         ).onSuccess { jellyfinMediaSource ->
             // Ensure transcoding of the current element is stopped
-            getCurrentMediaSourceOrNull()?.let { oldMediaSource ->
-                viewModel.stopTranscoding(oldMediaSource as RemoteJellyfinMediaSource)
+            (getCurrentMediaSourceOrNull() as? RemoteJellyfinMediaSource)?.let { oldMediaSource ->
+                viewModel.stopTranscoding(oldMediaSource)
             }
 
             _currentMediaSource.value = jellyfinMediaSource

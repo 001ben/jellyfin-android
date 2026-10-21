@@ -10,6 +10,7 @@ import org.jellyfin.mobile.R
 import org.jellyfin.mobile.data.entity.DownloadFiles
 import org.jellyfin.mobile.downloads.DownloadStatus
 import timber.log.Timber
+import java.io.File
 
 class StorageManager(
     private val context: Context,
@@ -48,6 +49,11 @@ class StorageManager(
 
         for (file in download.files) {
             if (file.status != DownloadStatus.DOWNLOADED) return false
+            if (file.uri.scheme == "file") {
+                val localFile = File(file.uri.path ?: return false)
+                if (!localFile.exists() || localFile.length() != file.size) return false
+                continue
+            }
             val documentFile = DocumentFile.fromSingleUri(context, file.uri)
             if (documentFile == null || !documentFile.exists() || documentFile.length() != file.size) {
                 return false

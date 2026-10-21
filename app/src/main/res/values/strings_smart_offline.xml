@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="smart_offline_title">Smart offline</string>
+    <string name="smart_offline_sign_in">Sign in to a server to configure smart downloads.</string>
+    <string name="smart_offline_description">Keep the next unwatched episodes for your selected series. Specials are excluded. Downloads use app storage and appear here when complete.</string>
+    <string name="smart_offline_enabled">Enable smart episode downloads</string>
+    <string name="smart_offline_count">Episodes per series (1–20)</string>
+    <string name="smart_offline_cap">Managed storage cap in GiB (1–100)</string>
+    <string name="smart_offline_wifi">Unmetered Wi-Fi only</string>
+    <string name="smart_offline_cleanup">Automatically remove watched managed downloads</string>
+    <string name="smart_offline_cleanup_help">Cleanup happens after watching and server synchronization. Only this feature’s local files are removed. Manual downloads and server media are untouched.</string>
+    <string name="smart_offline_lan">Optional home LAN endpoint (HTTPS)</string>
+    <string name="smart_offline_lan_help">Requires valid HTTPS, a direct Wi-Fi route and the same server ID. No SSID matching or changes to VPN settings. HTTP LAN endpoints are not supported.</string>
+    <string name="smart_offline_remote">Allow downloads through the configured remote endpoint</string>
+    <string name="smart_offline_remote_help">Uses the signed-in server address if LAN is unavailable. Its configured transport and VPN route are retained. If disabled, downloads wait for verified LAN access. Wi-Fi and storage limits still apply.</string>
+    <string name="smart_offline_save">Save and check now</string>
+    <string name="smart_offline_series_help">Select series below. Series changes are saved immediately. Disabling a series keeps its existing files.</string>
+    <string name="smart_offline_search">Search series</string>
+    <string name="smart_offline_close">Close</string>
+</resources>

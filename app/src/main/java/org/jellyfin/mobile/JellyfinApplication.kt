@@ -5,6 +5,7 @@ import android.webkit.WebView
 import org.jellyfin.mobile.app.apiModule
 import org.jellyfin.mobile.app.applicationModule
 import org.jellyfin.mobile.data.databaseModule
+import org.jellyfin.mobile.downloads.smart.OfflineProgressWorker
 import org.jellyfin.mobile.utils.JellyTree
 import org.jellyfin.mobile.utils.isWebViewSupported
 import org.koin.android.ext.koin.androidContext
@@ -37,5 +38,6 @@ class JellyfinApplication : Application() {
                 databaseModule,
             )
         }
+        OfflineProgressWorker.recover(this)
     }
 }

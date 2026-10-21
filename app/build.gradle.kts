@@ -187,6 +187,7 @@ dependencies {
     testRuntimeOnly(libs.junit.engine)
     testImplementation(libs.bundles.kotest)
     testImplementation(libs.mockk)
+    testImplementation("com.squareup.okhttp3:okhttp-tls:5.3.2")
     androidTestImplementation(libs.bundles.androidx.test)
 
     // Formatting rules for detekt
