@@ -14,6 +14,7 @@ import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import java.io.IOException
 import java.net.InetAddress
 import java.net.Proxy
@@ -36,7 +37,8 @@ class AndroidDownloadNetwork(context: Context) : DownloadNetwork {
     override fun wifi(): DirectWifiRoute? = connectivity.allNetworks.firstOrNull { network ->
         connectivity.getNetworkCapabilities(network)?.let {
             it.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) &&
-                !it.hasTransport(NetworkCapabilities.TRANSPORT_VPN) && it.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+                !it.hasTransport(NetworkCapabilities.TRANSPORT_VPN) &&
+                it.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
         } == true
     }?.let { network -> DirectWifiRoute(network.socketFactory) { network.getAllByName(it).toList() } }
 
@@ -47,7 +49,8 @@ class AndroidDownloadNetwork(context: Context) : DownloadNetwork {
         // VPNs must expose a Wi-Fi underlay; ambiguous capabilities conservatively wait.
         return !wifiOnly || (
             caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) &&
-                !caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+                !caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) &&
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
             )
     }
 }
@@ -57,7 +60,8 @@ class SmartOfflineEndpoint(private val network: DownloadNetwork, client: OkHttpC
 
     // Redirects must never move authentication to another endpoint (or downgrade HTTPS).
     private val strictClient = client.newBuilder().followRedirects(false).followSslRedirects(false)
-        .connectTimeout(5, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
+        .connectTimeout(CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .readTimeout(READ_TIMEOUT_SECONDS, TimeUnit.SECONDS).build()
 
     fun allowed(wifiOnly: Boolean): Boolean = network.wifi() != null || network.remoteAllowed(wifiOnly)
     fun allowed(endpoint: VerifiedDownloadEndpoint, wifiOnly: Boolean): Boolean =
@@ -71,11 +75,15 @@ class SmartOfflineEndpoint(private val network: DownloadNetwork, client: OkHttpC
         val request = Request.Builder().url(url.newBuilder().addPathSegments("System/Info/Public").build()).build()
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) throw IOException("Server identity unavailable")
-            val bytes = response.peekBody(64 * 1024 + 1L).bytes()
-            if (bytes.size > 64 * 1024) throw IOException("Invalid server identity response")
-            return Json.parseToJsonElement(bytes.decodeToString()).jsonObject["Id"]?.jsonPrimitive?.content
+            return Json.parseToJsonElement(identityBody(response)).jsonObject["Id"]?.jsonPrimitive?.content
                 ?.takeIf { it.isNotBlank() } ?: throw IOException("Missing server identity")
         }
+    }
+
+    private fun identityBody(response: Response): String {
+        val bytes = response.peekBody(MAX_IDENTITY_BYTES + 1).bytes()
+        if (bytes.size > MAX_IDENTITY_BYTES) throw IOException("Invalid server identity response")
+        return bytes.decodeToString()
     }
 
     suspend fun resolve(account: SmartOfflineAccount, remote: String): VerifiedDownloadEndpoint = withContext(
@@ -86,30 +94,16 @@ class SmartOfflineEndpoint(private val network: DownloadNetwork, client: OkHttpC
         var lanFailure: Exception? = null
         if (account.lanUrl.isNotBlank() && wifi != null) {
             try {
-                val lan = SmartOfflinePolicy.lanUrl(account.lanUrl).toHttpUrl()
-                val addresses = wifi.lookup(lan.host)
-                require(
-                    addresses.isNotEmpty() && addresses.all {
-                        !it.isLoopbackAddress && (
-                            it.isSiteLocalAddress || it.isLinkLocalAddress ||
-                                (it.address.size == 16 && (it.address[0].toInt() and 0xfe) == 0xfc)
-                            )
-                    }
-                )
-                val client = strictClient.newBuilder().proxy(Proxy.NO_PROXY).socketFactory(wifi.sockets)
-                    .dns(object : Dns {
-                        override fun lookup(hostname: String): List<InetAddress> =
-                            if (hostname == lan.host) addresses else throw IOException("Unexpected host")
-                    }).build()
-                if (SmartOfflinePolicy.sameServer(account.serverIdentity, publicIdentity(client, lan))) {
-                    return@withContext VerifiedDownloadEndpoint(lan, client, true)
-                }
+                verifiedLan(account, wifi)?.let { return@withContext it }
             } catch (error: IOException) {
                 lanFailure = error
                 // Reachability and TLS failure are safe fallback cases; credentials have not been sent.
             } catch (error: IllegalArgumentException) {
                 lanFailure = error
                 // Invalid configuration or identity response. Never relax validation.
+            } catch (error: SecurityException) {
+                lanFailure = error
+                // VPN lockdown or route restrictions remain enforced; only the configured fallback may be used.
             }
         }
         if (!account.remoteFallback) {
@@ -120,5 +114,34 @@ class SmartOfflineEndpoint(private val network: DownloadNetwork, client: OkHttpC
         }
         if (!network.remoteAllowed(account.wifiOnly)) throw IOException("Waiting for a permitted remote route")
         VerifiedDownloadEndpoint(remote.toHttpUrl(), strictClient, false)
+    }
+
+    private fun verifiedLan(account: SmartOfflineAccount, wifi: DirectWifiRoute): VerifiedDownloadEndpoint? {
+        val lan = SmartOfflinePolicy.lanUrl(account.lanUrl).toHttpUrl()
+        val addresses = wifi.lookup(lan.host)
+        require(addresses.isNotEmpty() && addresses.all(::isLanAddress))
+        val client = strictClient.newBuilder().proxy(Proxy.NO_PROXY).socketFactory(wifi.sockets)
+            .dns(object : Dns {
+                override fun lookup(hostname: String): List<InetAddress> =
+                    if (hostname == lan.host) addresses else throw IOException("Unexpected host")
+            }).build()
+        val verified = SmartOfflinePolicy.sameServer(account.serverIdentity, publicIdentity(client, lan))
+        return if (verified) VerifiedDownloadEndpoint(lan, client, true) else null
+    }
+
+    private fun isLanAddress(address: InetAddress): Boolean {
+        if (address.isLoopbackAddress) return false
+        if (address.isSiteLocalAddress || address.isLinkLocalAddress) return true
+        val bytes = address.address
+        return bytes.size == IPV6_BYTES && (bytes[0].toInt() and IPV6_LOCAL_MASK) == IPV6_LOCAL_PREFIX
+    }
+
+    companion object {
+        private const val CONNECT_TIMEOUT_SECONDS = 5L
+        private const val READ_TIMEOUT_SECONDS = 30L
+        private const val MAX_IDENTITY_BYTES = 64L * 1024
+        private const val IPV6_BYTES = 16
+        private const val IPV6_LOCAL_MASK = 0xfe
+        private const val IPV6_LOCAL_PREFIX = 0xfc
     }
 }

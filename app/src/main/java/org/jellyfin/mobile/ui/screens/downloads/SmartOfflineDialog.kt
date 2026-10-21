@@ -26,107 +26,159 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import org.jellyfin.mobile.R
+import org.jellyfin.mobile.downloads.smart.SmartOfflineAccount
 import org.jellyfin.mobile.downloads.smart.SmartOfflinePolicy
+import org.jellyfin.mobile.downloads.smart.SmartOfflineSeries
+import org.jellyfin.mobile.downloads.smart.SmartOfflineUiState
 import org.jellyfin.mobile.downloads.smart.SmartOfflineViewModel
 import org.jellyfin.sdk.model.api.BaseItemDto
 import org.jellyfin.sdk.model.api.BaseItemKind
 import java.util.UUID
 
 @Composable
+fun SmartOfflineActions(visible: Boolean, content: @Composable () -> Unit) {
+    var show by remember { mutableStateOf(false) }
+    if (show) SmartOfflineDialog(onDismiss = { show = false })
+    Row {
+        if (visible) {
+            TextButton(onClick = { show = true }) { Text(stringResource(R.string.smart_offline_title)) }
+        }
+        content()
+    }
+}
+
+private const val DIALOG_MAX_HEIGHT = 520
+
+/** Unsaved text remains editable even while it cannot yet be parsed into valid settings. */
+private class SmartOfflineDraft(account: SmartOfflineAccount) {
+    var settings by mutableStateOf(account)
+    var count by mutableStateOf(account.nextCount.toString())
+    var cap by mutableStateOf(account.capGiB.toString())
+
+    val validCount: Boolean
+        get() = count.toIntOrNull() in SmartOfflinePolicy.MIN_EPISODES..SmartOfflinePolicy.MAX_EPISODES
+    val validCap: Boolean get() = cap.toIntOrNull() in SmartOfflinePolicy.MIN_CAP_GIB..SmartOfflinePolicy.MAX_CAP_GIB
+    val canSave: Boolean get() = validCount && validCap && validLanUrl()
+
+    private fun validLanUrl(): Boolean = settings.lanUrl.isBlank() ||
+        runCatching { SmartOfflinePolicy.lanUrl(settings.lanUrl) }.isSuccess
+
+    fun savedSettings(): SmartOfflineAccount? = if (canSave) {
+        settings.copy(nextCount = count.toInt(), capGiB = cap.toInt())
+    } else {
+        null
+    }
+}
+
+@Composable
 fun SmartOfflineDialog(onDismiss: () -> Unit, model: SmartOfflineViewModel = viewModel()) {
     val state by model.state.collectAsState()
     LaunchedEffect(Unit) { model.load() }
-    val account = state.account
-    var draft by remember(account) { mutableStateOf(account) }
-    var count by remember(account) { mutableStateOf(account?.nextCount?.toString().orEmpty()) }
-    var cap by remember(account) { mutableStateOf(account?.capGiB?.toString().orEmpty()) }
-    var query by remember { mutableStateOf("") }
-    val nextCount = count.toIntOrNull()
-    val capGiB = cap.toIntOrNull()
-    val valid = nextCount in 1..20 && capGiB in 1..100 &&
-        (draft?.lanUrl.isNullOrBlank() || runCatching { SmartOfflinePolicy.lanUrl(draft!!.lanUrl) }.isSuccess)
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.smart_offline_title)) },
-        text = {
-            Column(Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState())) {
-                if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-                if (account == null) Text(stringResource(R.string.smart_offline_sign_in))
-                draft?.let { settings ->
-                    Text(stringResource(R.string.smart_offline_description))
-                    SmartCheck(stringResource(R.string.smart_offline_enabled), settings.enabled, !state.busy) {
-                        draft = settings.copy(enabled = it)
-                    }
-                    OutlinedTextField(
-                        count,
-                        { count = it },
-                        label = { Text(stringResource(R.string.smart_offline_count)) },
-                        singleLine = true,
-                        isError = nextCount !in 1..20
-                    )
-                    OutlinedTextField(
-                        cap,
-                        { cap = it },
-                        label = { Text(stringResource(R.string.smart_offline_cap)) },
-                        singleLine = true,
-                        isError = capGiB !in 1..100
-                    )
-                    SmartCheck(stringResource(R.string.smart_offline_wifi), settings.wifiOnly, !state.busy) {
-                        draft = settings.copy(wifiOnly = it)
-                    }
-                    SmartCheck(stringResource(R.string.smart_offline_cleanup), settings.cleanup, !state.busy) {
-                        draft = settings.copy(cleanup = it)
-                    }
-                    Text(stringResource(R.string.smart_offline_cleanup_help))
-                    OutlinedTextField(
-                        settings.lanUrl,
-                        { draft = settings.copy(lanUrl = it.trim()) },
-                        label = { Text(stringResource(R.string.smart_offline_lan)) },
-                        placeholder = { Text("https://jellyfin.home.example") },
-                        singleLine = true
-                    )
-                    Text(stringResource(R.string.smart_offline_lan_help))
-                    SmartCheck(stringResource(R.string.smart_offline_remote), settings.remoteFallback, !state.busy) {
-                        draft = settings.copy(remoteFallback = it)
-                    }
-                    Text(stringResource(R.string.smart_offline_remote_help))
-                    if (settings.status.isNotBlank()) Text(settings.status)
-                    TextButton(enabled = valid && !state.busy, onClick = {
-                        model.save(settings.copy(nextCount = nextCount!!, capGiB = capGiB!!))
-                    }) { Text(stringResource(R.string.smart_offline_save)) }
-                    Text(stringResource(R.string.smart_offline_series_help))
-                    for (series in state.series) {
-                        SmartCheck(series.name, true, !state.busy) {
-                            model.toggle(
-                                BaseItemDto(
-                                    id = UUID.fromString(series.seriesId),
-                                    name = series.name,
-                                    type = BaseItemKind.SERIES
-                                ),
-                                false
-                            )
-                        }
-                    }
-                    OutlinedTextField(
-                        query,
-                        { query = it },
-                        label = { Text(stringResource(R.string.smart_offline_search)) },
-                        singleLine = true
-                    )
-                    TextButton(
-                        enabled = !state.busy,
-                        onClick = { model.search(query) }
-                    ) { Text(stringResource(R.string.smart_offline_search)) }
-                    for (item in state.results.filter { result -> state.series.none { it.seriesId == result.id.toString() } }) {
-                        SmartCheck(item.name.orEmpty(), false, !state.busy) { model.toggle(item, true) }
-                    }
-                }
-                if (state.message.isNotBlank()) Text(state.message)
-            }
+        text = { SmartOfflineContent(state, model) },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.smart_offline_close)) }
         },
-        confirmButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.smart_offline_close)) } },
     )
 }
+
+@Composable
+private fun SmartOfflineContent(state: SmartOfflineUiState, model: SmartOfflineViewModel) {
+    Column(Modifier.heightIn(max = DIALOG_MAX_HEIGHT.dp).verticalScroll(rememberScrollState())) {
+        if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+        val account = state.account
+        if (account == null) {
+            Text(stringResource(R.string.smart_offline_sign_in))
+        } else {
+            val draft = remember(account) { SmartOfflineDraft(account) }
+            SmartOfflineDownloadOptions(draft, enabled = !state.busy)
+            SmartOfflineNetworkOptions(draft, enabled = !state.busy)
+            if (account.status.isNotBlank()) Text(account.status)
+            TextButton(enabled = draft.canSave && !state.busy, onClick = {
+                draft.savedSettings()?.let(model::save)
+            }) { Text(stringResource(R.string.smart_offline_save)) }
+            SmartOfflineSeriesChooser(state, model)
+        }
+        if (state.message.isNotBlank()) Text(state.message)
+    }
+}
+
+@Composable
+private fun SmartOfflineDownloadOptions(draft: SmartOfflineDraft, enabled: Boolean) {
+    val settings = draft.settings
+    Text(stringResource(R.string.smart_offline_description))
+    SmartCheck(stringResource(R.string.smart_offline_enabled), settings.enabled, enabled) {
+        draft.settings = settings.copy(enabled = it)
+    }
+    OutlinedTextField(
+        draft.count,
+        { draft.count = it },
+        label = { Text(stringResource(R.string.smart_offline_count)) },
+        singleLine = true,
+        isError = !draft.validCount,
+    )
+    OutlinedTextField(
+        draft.cap,
+        { draft.cap = it },
+        label = { Text(stringResource(R.string.smart_offline_cap)) },
+        singleLine = true,
+        isError = !draft.validCap,
+    )
+    SmartCheck(stringResource(R.string.smart_offline_wifi), settings.wifiOnly, enabled) {
+        draft.settings = settings.copy(wifiOnly = it)
+    }
+    SmartCheck(stringResource(R.string.smart_offline_cleanup), settings.cleanup, enabled) {
+        draft.settings = settings.copy(cleanup = it)
+    }
+    Text(stringResource(R.string.smart_offline_cleanup_help))
+}
+
+@Composable
+private fun SmartOfflineNetworkOptions(draft: SmartOfflineDraft, enabled: Boolean) {
+    val settings = draft.settings
+    OutlinedTextField(
+        settings.lanUrl,
+        { draft.settings = settings.copy(lanUrl = it.trim()) },
+        label = { Text(stringResource(R.string.smart_offline_lan)) },
+        placeholder = { Text("https://jellyfin.home.example") },
+        singleLine = true,
+    )
+    Text(stringResource(R.string.smart_offline_lan_help))
+    SmartCheck(stringResource(R.string.smart_offline_remote), settings.remoteFallback, enabled) {
+        draft.settings = settings.copy(remoteFallback = it)
+    }
+    Text(stringResource(R.string.smart_offline_remote_help))
+}
+
+@Composable
+private fun SmartOfflineSeriesChooser(state: SmartOfflineUiState, model: SmartOfflineViewModel) {
+    var query by remember { mutableStateOf("") }
+    Text(stringResource(R.string.smart_offline_series_help))
+    for (series in state.series) {
+        SmartCheck(series.name, true, !state.busy) { model.toggle(series.asItem(), false) }
+    }
+    OutlinedTextField(
+        query,
+        { query = it },
+        label = { Text(stringResource(R.string.smart_offline_search)) },
+        singleLine = true,
+    )
+    TextButton(enabled = !state.busy, onClick = { model.search(query) }) {
+        Text(stringResource(R.string.smart_offline_search))
+    }
+    val selectedIds = state.series.map { it.seriesId }.toSet()
+    for (item in state.results.filterNot { it.id.toString() in selectedIds }) {
+        SmartCheck(item.name.orEmpty(), false, !state.busy) { model.toggle(item, true) }
+    }
+}
+
+private fun SmartOfflineSeries.asItem() = BaseItemDto(
+    id = UUID.fromString(seriesId),
+    name = name,
+    type = BaseItemKind.SERIES,
+)
 
 @Composable
 private fun SmartCheck(label: String, checked: Boolean, enabled: Boolean, changed: (Boolean) -> Unit) {

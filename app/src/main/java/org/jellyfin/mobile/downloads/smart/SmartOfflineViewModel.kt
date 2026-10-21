@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.jellyfin.mobile.app.AppPreferences
 import org.jellyfin.sdk.model.api.BaseItemDto
 import org.koin.core.component.KoinComponent
 import org.koin.core.component.inject
@@ -22,6 +23,7 @@ data class SmartOfflineUiState(
 
 class SmartOfflineViewModel : ViewModel(), KoinComponent {
     private val manager by inject<SmartOfflineManager>()
+    private val preferences by inject<AppPreferences>()
     private val _state = MutableStateFlow(SmartOfflineUiState())
     val state = _state.asStateFlow()
 
@@ -41,13 +43,16 @@ class SmartOfflineViewModel : ViewModel(), KoinComponent {
     }
 
     fun load() = run {
-        val account = manager.current()
+        val account = manager.current(preferences.currentServerId, preferences.currentUserId)
         _state.value = _state.value.copy(account = account, series = account?.let { manager.series(it) }.orEmpty())
     }
 
     fun save(account: SmartOfflineAccount) = run {
         manager.save(account)
-        _state.value = _state.value.copy(account = account, message = "Saved; Android schedules downloads when constraints allow.")
+        _state.value = _state.value.copy(
+            account = account,
+            message = "Saved; Android schedules downloads when constraints allow.",
+        )
     }
 
     fun search(query: String) = run {

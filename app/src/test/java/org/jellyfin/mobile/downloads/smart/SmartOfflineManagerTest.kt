@@ -6,10 +6,10 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkObject
 import io.mockk.unmockkObject
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
 import org.jellyfin.mobile.app.ApiClientController
-import org.jellyfin.mobile.app.AppPreferences
 import org.jellyfin.mobile.data.JellyfinDatabase
 import org.jellyfin.mobile.data.dao.DownloadDao
 import org.jellyfin.mobile.data.dao.UserDao
@@ -35,6 +35,7 @@ import java.io.IOException
 import java.net.InetAddress
 import java.nio.file.Path
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 
 class SmartOfflineManagerTest {
     @TempDir lateinit var directory: Path
@@ -44,11 +45,67 @@ class SmartOfflineManagerTest {
     private val dao = mockk<SmartOfflineDao>(relaxed = true)
     private val users = mockk<UserDao>()
     private val controller = mockk<ApiClientController>()
-    private val preferences = mockk<AppPreferences>()
     private val outbox = mutableMapOf<Long, OfflineProgress>()
     private val managed = mutableMapOf<Long, SmartOfflineManaged>()
     private val rows = mutableMapOf<Long, DownloadEntity>()
     private val account = SmartOfflineAccount("1-2", 1, 2, enabled = true, cleanup = true, serverIdentity = "server-A")
+
+    @Test
+    fun `account server or item mismatch prevents deletion of the referenced record`() = runBlocking {
+        val manager = setup()
+        val original = row()
+        val variants = listOf(
+            original.copy(serverId = 99),
+            original.copy(userId = 99),
+            original.copy(itemId = UUID.randomUUID())
+        )
+        for (variant in variants) {
+            rows[original.id] = variant
+            manager.remove(original.id, true)
+            assertEquals(variant, rows[original.id])
+            assertTrue(File(directory.toFile(), original.path).exists())
+        }
+    }
+
+    @Test
+    fun `worker cancellation propagates and preserves pending watch state`() = runBlocking {
+        val manager = setup()
+        val download = row()
+        manager.record(OfflinePlaybackSnapshot(download.id, 1000, true, stopped = false))
+        every { controller.getApiClient(1, 2) } throws CancellationException("test cancellation")
+        assertThrows(CancellationException::class.java) { runBlocking { manager.syncProgress() } }
+        assertTrue(outbox.getValue(download.id).finished)
+    }
+
+    @Test
+    fun `automatic cleanup waits for server watched state and pending local reconciliation`() = runBlocking {
+        val manager = setup()
+        val download = row()
+        val played = AtomicBoolean(false)
+        coEvery { dao.account(any()) } returns account.copy(remoteFallback = true)
+        coEvery { dao.managed(any()) } answers { managed.values.toList() }
+        coEvery { dao.series(any()) } returns emptyList()
+        LocalHttpFixture().use { server ->
+            every { controller.getApiClient(1, 2) } returns api(server.url)
+            server.handler = { exchange ->
+                val response = "{\"Items\":[{\"Id\":\"${download.itemId}\",\"Type\":\"Episode\",\"UserData\":{" +
+                    "\"Key\":\"test\",\"ItemId\":\"${download.itemId}\",\"PlaybackPositionTicks\":0," +
+                    "\"Played\":${played.get()},\"PlayCount\":1,\"IsFavorite\":false}}]," +
+                    "\"TotalRecordCount\":1,\"StartIndex\":0}"
+                server.respond(exchange, 200, response.toByteArray())
+            }
+            manager.reconcile(account.key)
+            assertTrue(File(directory.toFile(), download.path).exists())
+            manager.record(OfflinePlaybackSnapshot(download.id, 1000, true, stopped = false))
+            played.set(true)
+            manager.reconcile(account.key)
+            assertTrue(File(directory.toFile(), download.path).exists())
+            outbox.clear() // Simulate the exact-revision server acknowledgement.
+            manager.reconcile(account.key)
+            assertFalse(File(directory.toFile(), download.path).exists())
+            assertFalse(rows.containsKey(download.id))
+        }
+    }
 
     @Test
     fun `late stop releases its own lease without releasing a newer playback session`() = runBlocking {
@@ -58,15 +115,35 @@ class SmartOfflineManagerTest {
             val manager = setup()
             val row = row()
             assertTrue(manager.started(row.id, "old-session"))
-            manager.record(row.id, 200, false, stopped = false, eventSequence = 20, session = "old-session")
+            manager.record(
+                OfflinePlaybackSnapshot(
+                    row.id,
+                    200,
+                    false,
+                    stopped = false,
+                    eventSequence = 20,
+                    session = "old-session"
+                )
+            )
             assertTrue(manager.started(row.id, "new-session"))
-            manager.record(row.id, 100, false, stopped = true, eventSequence = 10, session = "old-session")
+            manager.record(
+                OfflinePlaybackSnapshot(row.id, 100, false, stopped = true, eventSequence = 10, session = "old-session")
+            )
             LocalHttpFixture().use { server ->
                 every { controller.getApiClient(1, 2) } returns api(server.url)
                 server.handler = { server.respond(it, 204, ByteArray(0), length = -1) }
                 manager.syncProgress()
                 assertTrue(server.requests.isEmpty())
-                manager.record(row.id, 150, false, stopped = true, eventSequence = 15, session = "new-session")
+                manager.record(
+                    OfflinePlaybackSnapshot(
+                        row.id,
+                        150,
+                        false,
+                        stopped = true,
+                        eventSequence = 15,
+                        session = "new-session"
+                    )
+                )
                 manager.syncProgress()
                 assertEquals(1, server.requests.size)
                 assertTrue(outbox.isEmpty())
@@ -80,11 +157,13 @@ class SmartOfflineManagerTest {
     fun `an older acknowledgement cannot discard progress recorded while the request was in flight`() = runBlocking {
         val manager = setup()
         val row = row()
-        manager.record(row.id, 100, false, stopped = false, eventSequence = 1)
+        manager.record(OfflinePlaybackSnapshot(row.id, 100, false, stopped = false, eventSequence = 1))
         LocalHttpFixture().use { server ->
             every { controller.getApiClient(1, 2) } returns api(server.url)
             server.handler = { exchange ->
-                runBlocking { manager.record(row.id, 200, false, stopped = false, eventSequence = 2) }
+                runBlocking {
+                    manager.record(OfflinePlaybackSnapshot(row.id, 200, false, stopped = false, eventSequence = 2))
+                }
                 server.respond(exchange, 204, ByteArray(0), length = -1)
             }
             manager.syncProgress()
@@ -111,7 +190,6 @@ class SmartOfflineManagerTest {
         }
         coEvery { downloads.delete(any()) } answers {
             rows.remove(firstArg())
-            Unit
         }
         coEvery { dao.account(any()) } returns account
         coEvery { dao.owned(any()) } answers { managed[firstArg()] }
@@ -121,20 +199,17 @@ class SmartOfflineManagerTest {
             dao.save(any<OfflineProgress>())
         } answers {
             outbox[firstArg<OfflineProgress>().downloadId] = firstArg()
-            Unit
         }
         coEvery { dao.acknowledged(any(), any()) } answers {
             val id = firstArg<Long>()
             if (outbox[id]?.revision == secondArg<String>()) outbox.remove(id)
-            Unit
         }
         coEvery { dao.stopped(any(), any()) } answers {
             val id = firstArg<Long>()
             if (outbox[id]?.revision == secondArg<String>()) outbox[id] = outbox.getValue(id).copy(stopReported = true)
-            Unit
         }
         every { users.getUser(2) } returns UserEntity(2, 1, UUID.randomUUID(), "test-token", 0)
-        return SmartOfflineManager(context, database, dao, users, controller, preferences, endpoint)
+        return SmartOfflineManager(context, database, dao, users, controller, endpoint)
     }
 
     private fun row(id: Long = 9): DownloadEntity {
@@ -194,7 +269,7 @@ class SmartOfflineManagerTest {
         assertTrue(manager.started(row.id))
         manager.remove(row.id, true)
         assertTrue(File(directory.toFile(), row.path).exists())
-        manager.record(row.id, 500, false, stopped = false)
+        manager.record(OfflinePlaybackSnapshot(row.id, 500, false, stopped = false))
         assertNotNull(outbox[row.id])
         manager.remove(row.id, true)
         assertTrue(File(directory.toFile(), row.path).exists())
@@ -203,12 +278,12 @@ class SmartOfflineManagerTest {
     @Test fun `late partial snapshot cannot erase completed watch or an acknowledged completion`() = runBlocking {
         val manager = setup()
         val row = row()
-        manager.record(row.id, 1000, true, stopped = false, eventSequence = 20)
-        manager.record(row.id, 100, false, stopped = false, eventSequence = 10)
+        manager.record(OfflinePlaybackSnapshot(row.id, 1000, true, stopped = false, eventSequence = 20))
+        manager.record(OfflinePlaybackSnapshot(row.id, 100, false, stopped = false, eventSequence = 10))
         assertTrue(outbox.getValue(row.id).finished)
         assertEquals(1000L, outbox.getValue(row.id).position)
         outbox.clear() // Simulate server acknowledgement before an already captured older coroutine reaches Room.
-        manager.record(row.id, 200, false, stopped = false, eventSequence = 15)
+        manager.record(OfflinePlaybackSnapshot(row.id, 200, false, stopped = false, eventSequence = 15))
         assertTrue(outbox.isEmpty())
         assertTrue(rows.getValue(row.id).item.userData!!.played)
     }
@@ -216,7 +291,7 @@ class SmartOfflineManagerTest {
     @Test fun `retry retains watched event and does not repeat acknowledged stop`() = runBlocking {
         val manager = setup()
         val row = row()
-        manager.record(row.id, 1000, true, stopped = false)
+        manager.record(OfflinePlaybackSnapshot(row.id, 1000, true, stopped = false))
         LocalHttpFixture().use { server ->
             every { controller.getApiClient(1, 2) } returns api(server.url)
             var markAttempts = 0

@@ -44,9 +44,9 @@ class SmartOfflineWorker(context: Context, parameters: WorkerParameters) :
             .setSmallIcon(android.R.drawable.stat_sys_download).setOngoing(true)
             .addAction(0, applicationContext.getString(R.string.download_cancel), cancel).build()
         return ForegroundInfo(
-            1000 + (id.hashCode() and 0x3fffffff),
+            NOTIFICATION_ID_BASE + (id.hashCode() and NOTIFICATION_ID_MASK),
             notification,
-            if (Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else 0
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else 0
         )
     }
 
@@ -54,7 +54,7 @@ class SmartOfflineWorker(context: Context, parameters: WorkerParameters) :
         val key = inputData.getString("account") ?: return Result.failure()
         return try {
             setForeground(getForegroundInfo())
-            withTimeout(TimeUnit.MINUTES.toMillis(8)) { manager.reconcile(key) }
+            withTimeout(TimeUnit.MINUTES.toMillis(MAX_PASS_MINUTES)) { manager.reconcile(key) }
             Result.success()
         } catch (_: TimeoutCancellationException) {
             Result.retry()
@@ -74,6 +74,10 @@ class SmartOfflineWorker(context: Context, parameters: WorkerParameters) :
     }
 
     companion object {
+        private const val NOTIFICATION_ID_BASE = 1000
+        private const val NOTIFICATION_ID_MASK = 0x3fffffff
+        private const val MAX_PASS_MINUTES = 8L
+
         fun schedule(context: Context, account: SmartOfflineAccount) {
             val work = WorkManager.getInstance(context)
             val name = "smart-offline-${account.key}"

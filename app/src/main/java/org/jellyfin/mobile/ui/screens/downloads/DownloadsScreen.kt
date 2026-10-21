@@ -65,8 +65,6 @@ fun DownloadsScreen(
     val selection = remember { mutableStateSetOf<Long>() }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
-    var showSmartOffline by remember { mutableStateOf(false) }
-    if (showSmartOffline) SmartOfflineDialog(onDismiss = { showSmartOffline = false })
 
     val selectionMode = selection.isNotEmpty()
 
@@ -151,10 +149,7 @@ fun DownloadsScreen(
                     }
                 },
                 actions = {
-                    if (!selectionMode) TextButton(onClick = { showSmartOffline = true }) {
-                        Text(stringResource(R.string.smart_offline_title))
-                    }
-                    Row {
+                    SmartOfflineActions(visible = !selectionMode) {
                         AnimatedVisibility(
                             visible = selectionMode,
                             enter = fadeIn(),
