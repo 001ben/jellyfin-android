@@ -40,7 +40,7 @@ import org.jellyfin.mobile.BuildConfig
 import org.jellyfin.mobile.R
 import org.jellyfin.mobile.app.AppPreferences
 import org.jellyfin.mobile.app.PLAYER_EVENT_CHANNEL
-import org.jellyfin.mobile.downloads.smart.SmartOfflineManager
+import org.jellyfin.mobile.downloads.smart.OfflinePlaybackReporter
 import org.jellyfin.mobile.player.interaction.PlayerEvent
 import org.jellyfin.mobile.player.interaction.PlayerLifecycleObserver
 import org.jellyfin.mobile.player.interaction.PlayerMediaSessionCallback
@@ -49,7 +49,6 @@ import org.jellyfin.mobile.player.mediasegments.MediaSegmentAction
 import org.jellyfin.mobile.player.mediasegments.MediaSegmentRepository
 import org.jellyfin.mobile.player.queue.QueueManager
 import org.jellyfin.mobile.player.source.JellyfinMediaSource
-import org.jellyfin.mobile.player.source.LocalJellyfinMediaSource
 import org.jellyfin.mobile.player.source.RemoteJellyfinMediaSource
 import org.jellyfin.mobile.player.ui.DecoderType
 import org.jellyfin.mobile.player.ui.DisplayPreferences
@@ -107,7 +106,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     private val userApi: UserApi = apiClient.userApi
 
     private val appPreferences: AppPreferences by inject()
-    private val offlineProgress: SmartOfflineManager by inject()
+    private val offlinePlayback by lazy { OfflinePlaybackReporter(get()) }
     private val lifecycleObserver = PlayerLifecycleObserver(this)
     private val audioManager: AudioManager by lazy { getApplication<Application>().getSystemService()!! }
     val notificationHelper: PlayerNotificationHelper by lazy { PlayerNotificationHelper(this) }
@@ -442,12 +441,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     }
 
     private suspend fun Player.reportPlaybackState() {
-        val local = mediaSourceOrNull as? LocalJellyfinMediaSource
-        if (local != null) {
-            offlineProgress.record(local.downloadId, currentPosition.milliseconds.inWholeTicks,
-                playbackState == Player.STATE_ENDED, stopped = false, session = local.playSessionId)
-            return
-        }
+        if (offlinePlayback.reportState(mediaSourceOrNull, this)) return
         val mediaSource = mediaSourceOrNull as? RemoteJellyfinMediaSource ?: return
         val playbackPosition = currentPosition.milliseconds
         if (playbackState != Player.STATE_ENDED) {
@@ -482,18 +476,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     }
 
     private fun reportPlaybackStop() {
-        val local = mediaSourceOrNull as? LocalJellyfinMediaSource
-        if (local != null) {
-            val player = playerOrNull ?: return
-            val finished = player.playbackState == Player.STATE_ENDED
-            val position = if (finished) local.runTime.inWholeTicks else player.currentPosition.milliseconds.inWholeTicks
-            val sequence = offlineProgress.nextSequence()
-            CoroutineScope(Dispatchers.IO).launch {
-                offlineProgress.record(local.downloadId, position, finished, stopped = true, eventSequence = sequence,
-                    session = local.playSessionId)
-            }
-            return
-        }
+        if (offlinePlayback.reportStop(mediaSourceOrNull, playerOrNull)) return
         val mediaSource = mediaSourceOrNull as? RemoteJellyfinMediaSource ?: return
         val player = playerOrNull ?: return
         val hasFinished = player.playbackState == Player.STATE_ENDED

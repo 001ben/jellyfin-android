@@ -10,6 +10,13 @@ import java.util.UUID
 object SmartOfflinePolicy {
     const val GIB = 1024L * 1024 * 1024
     const val FREE_SPACE_RESERVE = 256L * 1024 * 1024
+    const val MIN_EPISODES = 1
+    const val MAX_EPISODES = 20
+    const val MIN_CAP_GIB = 1
+    const val MAX_CAP_GIB = 100
+    private const val HTTP_REQUEST_TIMEOUT = 408
+    private const val HTTP_TOO_MANY_REQUESTS = 429
+    private const val HTTP_SERVER_ERROR = 500
 
     fun nextEpisodes(
         episodes: List<BaseItemDto>,
@@ -19,12 +26,16 @@ object SmartOfflinePolicy {
     ): List<BaseItemDto> =
         episodes.asSequence()
             .filter { it.userData?.played != true && it.id !in locallyFinished }
-            .filter { (it.parentIndexNumber ?: 0) > 0 && (it.indexNumber ?: 0) > 0 && it.locationType?.name != "VIRTUAL" }
+            .filter(::hasEpisodeNumber)
+            .filter { it.locationType?.name != "VIRTUAL" }
             .filter { it.premiereDate?.isAfter(now) != true }
             .distinctBy { it.id }
             .sortedWith(compareBy({ it.parentIndexNumber }, { it.indexNumber }, { it.id }))
-            .take(count.coerceIn(1, 20))
+            .take(count.coerceIn(MIN_EPISODES, MAX_EPISODES))
             .toList()
+
+    private fun hasEpisodeNumber(item: BaseItemDto): Boolean =
+        (item.parentIndexNumber ?: 0) > 0 && (item.indexNumber ?: 0) > 0
 
     fun fits(size: Long, used: Long, cap: Long, free: Long): Boolean =
         size > 0 && used >= 0 && used <= cap && size <= cap - used && free >= FREE_SPACE_RESERVE &&
@@ -44,5 +55,6 @@ object SmartOfflinePolicy {
 
     fun sameServer(expected: String, actual: String?): Boolean = expected.isNotBlank() && expected == actual
 
-    fun retryable(code: Int): Boolean = code == 408 || code == 429 || code >= 500
+    fun retryable(code: Int): Boolean =
+        code == HTTP_REQUEST_TIMEOUT || code == HTTP_TOO_MANY_REQUESTS || code >= HTTP_SERVER_ERROR
 }

@@ -56,7 +56,9 @@ data class OfflineProgress(
     val stopReported: Boolean = false,
 )
 
+// Room generates one cohesive database contract; splitting these thin queries adds no independent policy boundary.
 @Dao
+@Suppress("TooManyFunctions")
 interface SmartOfflineDao {
     @Query("SELECT * FROM account")
     suspend fun accounts(): List<SmartOfflineAccount>
@@ -118,7 +120,12 @@ interface SmartOfflineDao {
 }
 
 @Database(
-    entities = [SmartOfflineAccount::class, SmartOfflineSeries::class, SmartOfflineManaged::class, OfflineProgress::class],
+    entities = [
+        SmartOfflineAccount::class,
+        SmartOfflineSeries::class,
+        SmartOfflineManaged::class,
+        OfflineProgress::class,
+    ],
     version = 1,
     exportSchema = true,
 )

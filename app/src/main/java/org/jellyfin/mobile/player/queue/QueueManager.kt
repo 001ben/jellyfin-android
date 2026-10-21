@@ -23,6 +23,7 @@ import org.jellyfin.mobile.player.interaction.PlayOptions
 import org.jellyfin.mobile.player.interaction.PlayerWebPreferences
 import org.jellyfin.mobile.player.source.ExternalSubtitleStream
 import org.jellyfin.mobile.player.source.JellyfinMediaSource
+import org.jellyfin.mobile.player.source.LocalDownloadPlayback
 import org.jellyfin.mobile.player.source.LocalJellyfinMediaSource
 import org.jellyfin.mobile.player.source.MediaSourceResolver
 import org.jellyfin.mobile.player.source.PlaybackDetails
@@ -141,14 +142,14 @@ class QueueManager(
             sourceInfo = download.item.mediaSources!!.first(),
             playSessionId = UUID.randomUUID().toString(),
             playbackDetails = PlaybackDetails(startTime, audioStreamIndex, subtitleStreamIndex),
-            remoteFileUri = mainFile.uri,
-            downloadId = download.id,
+            download = LocalDownloadPlayback(download.id, mainFile.uri),
         )
         mediaSource.startTime = startTime ?: (download.item.userData?.playbackPositionTicks ?: 0).ticks
         audioStreamIndex?.let { index -> mediaSource.selectAudioStream(mediaSource.audioStreams[index]) }
         subtitleStreamIndex?.let { index -> mediaSource.selectSubtitleStream(mediaSource.subtitleStreams[index]) }
         val offline: SmartOfflineManager = get()
-        if (!withContext(Dispatchers.IO) { offline.started(download.id, mediaSource.playSessionId) }) return PlayerException.NetworkFailure()
+        val acquired = withContext(Dispatchers.IO) { offline.started(download.id, mediaSource.playSessionId) }
+        if (!acquired) return PlayerException.NetworkFailure()
 
         _currentMediaSource.value = mediaSource
 

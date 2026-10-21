@@ -45,7 +45,13 @@ class LocalHttpFixture(tls: Boolean = false) : AutoCloseable {
         server.start()
     }
 
-    fun respond(exchange: HttpExchange, code: Int, bytes: ByteArray, headers: Map<String, String> = emptyMap(), length: Long = bytes.size.toLong()) {
+    fun respond(
+        exchange: HttpExchange,
+        code: Int,
+        bytes: ByteArray,
+        headers: Map<String, String> = emptyMap(),
+        length: Long = bytes.size.toLong(),
+    ) {
         headers.forEach { (name, value) -> exchange.responseHeaders.add(name, value) }
         exchange.sendResponseHeaders(code, length)
         exchange.responseBody.use { it.write(bytes) }

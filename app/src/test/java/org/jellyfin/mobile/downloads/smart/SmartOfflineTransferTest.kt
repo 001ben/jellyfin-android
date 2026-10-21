@@ -26,6 +26,12 @@ class SmartOfflineTransferTest {
     private val item = BaseItemDto(id = UUID.randomUUID(), type = BaseItemKind.EPISODE)
     private val managed = SmartOfflineManaged("1-2-${item.id}", "1-2", item)
 
+    private data class TransferOptions(
+        val cap: Long = 100,
+        val allowed: () -> Boolean = { true },
+        val validator: suspend (String?) -> Unit = {},
+    )
+
     @Test
     fun `interruption retains a validated partial and retry finishes it without duplicate bytes`() = runBlocking {
         LocalHttpFixture().use { server ->
@@ -39,9 +45,11 @@ class SmartOfflineTransferTest {
                     transfer(
                         server,
                         file,
-                        cap = body.size.toLong(),
-                        allowed = { ++policyChecks < 3 },
-                        validator = { saved = it }
+                        options = TransferOptions(
+                            cap = body.size.toLong(),
+                            allowed = { ++policyChecks < 3 },
+                            validator = { saved = it },
+                        ),
                     )
                 }
             }
@@ -54,7 +62,7 @@ class SmartOfflineTransferTest {
                     mapOf("ETag" to "\"v1\"", "Content-Range" to "bytes $offset-${body.size - 1}/${body.size}")
                 )
             }
-            transfer(server, file, managed.copy(etag = saved), cap = body.size.toLong())
+            transfer(server, file, managed.copy(etag = saved), TransferOptions(cap = body.size.toLong()))
             assertArrayEquals(body, file.readBytes())
         }
     }
@@ -73,22 +81,22 @@ class SmartOfflineTransferTest {
         server: LocalHttpFixture,
         file: File,
         entry: SmartOfflineManaged = managed,
-        cap: Long = 100,
-        allowed: () -> Boolean = { true },
-        validator: suspend (String?) -> Unit = {}
+        options: TransferOptions = TransferOptions(),
     ): Long =
         SmartOfflineTransfer().download(
-            VerifiedDownloadEndpoint(
-                server.url.toHttpUrl(),
-                OkHttpClient.Builder().followRedirects(false).build(),
-                false
+            SmartOfflineTransferRequest(
+                VerifiedDownloadEndpoint(
+                    server.url.toHttpUrl(),
+                    OkHttpClient.Builder().followRedirects(false).build(),
+                    false,
+                ),
+                api(server.url),
+                entry,
+                file,
+                options.cap,
             ),
-            api(server.url),
-            entry,
-            file,
-            cap,
-            { allowed() },
-            validator
+            { options.allowed() },
+            options.validator,
         )
 
     @Test fun `first download creates complete playable bytes within cap`() = runBlocking {
@@ -99,7 +107,8 @@ class SmartOfflineTransferTest {
             assertEquals(body.size.toLong(), transfer(server, file))
             assertArrayEquals(body, file.readBytes())
             assertTrue(server.requests.single().authorization!!.contains("test-token"))
-            assertEquals("/jellyfin/Items/${item.id}/Download", server.requests.single().path)
+            val expectedPath = "/jellyfin/Items/${item.id}/Download"
+            assertEquals(expectedPath, server.requests.single().path)
         }
     }
 
@@ -107,7 +116,12 @@ class SmartOfflineTransferTest {
         LocalHttpFixture().use { server ->
             val file = directory.resolve("partial").toFile().apply { writeText("abc") }
             server.handler = {
-                server.respond(it, 206, "def".toByteArray(), mapOf("ETag" to "\"v1\"", "Content-Range" to "bytes 3-5/6"))
+                server.respond(
+                    it,
+                    206,
+                    "def".toByteArray(),
+                    mapOf("ETag" to "\"v1\"", "Content-Range" to "bytes 3-5/6"),
+                )
             }
             assertEquals(6, transfer(server, file, managed.copy(etag = "\"v1\"")))
             assertEquals("abcdef", file.readText())
@@ -121,7 +135,7 @@ class SmartOfflineTransferTest {
             val file = directory.resolve("partial").toFile().apply { writeText("old and longer") }
             server.handler = { server.respond(it, 200, "new".toByteArray(), mapOf("ETag" to "\"v2\"")) }
             var saved: String? = null
-            transfer(server, file, managed.copy(etag = "\"v1\""), validator = { saved = it })
+            transfer(server, file, managed.copy(etag = "\"v1\""), TransferOptions(validator = { saved = it }))
             assertEquals("new", file.readText())
             assertEquals("\"v2\"", saved)
         }
@@ -132,7 +146,9 @@ class SmartOfflineTransferTest {
             val file = directory.resolve("partial").toFile().apply { writeText("abc") }
             for (headers in listOf(
                 mapOf("ETag" to "\"v2\"", "Content-Range" to "bytes 3-5/6"),
-                mapOf("ETag" to "\"v1\"", "Content-Range" to "bytes 2-5/6")
+                mapOf("ETag" to "\"v1\"", "Content-Range" to "bytes 2-5/6"),
+                mapOf("ETag" to "\"v1\"", "Content-Range" to "bytes 3-4/6"),
+                mapOf("ETag" to "\"v1\"", "Content-Range" to "bytes 3-6/6"),
             )) {
                 server.handler = { server.respond(it, 206, "def".toByteArray(), headers) }
                 assertThrows(
@@ -158,7 +174,9 @@ class SmartOfflineTransferTest {
         LocalHttpFixture().use { server ->
             val file = directory.resolve("too-large").toFile()
             server.handler = { server.respond(it, 200, "abcdef".toByteArray()) }
-            assertThrows(StorageBudgetExceeded::class.java) { runBlocking { transfer(server, file, cap = 5) } }
+            assertThrows(StorageBudgetExceeded::class.java) {
+                runBlocking { transfer(server, file, options = TransferOptions(cap = 5)) }
+            }
             assertFalse(file.exists())
         }
     }
@@ -167,7 +185,15 @@ class SmartOfflineTransferTest {
         LocalHttpFixture().use { server ->
             assertThrows(
                 IOException::class.java
-            ) { runBlocking { transfer(server, directory.resolve("denied").toFile(), allowed = { false }) } }
+            ) {
+                runBlocking {
+                    transfer(
+                        server,
+                        directory.resolve("denied").toFile(),
+                        options = TransferOptions(allowed = { false })
+                    )
+                }
+            }
             assertTrue(server.requests.isEmpty())
         }
     }

@@ -42,11 +42,20 @@ class SmartOfflineEndpointTest {
     private val account = SmartOfflineAccount("1-2", 1, 2, enabled = true, serverIdentity = "server-A")
     private val remote = "https://remote.example/jellyfin/"
 
+    @Test fun `restricted direct routes respect explicit fallback without weakening network security`() = runBlocking {
+        val route = DirectWifiRoute(SocketFactory.getDefault()) { throw SecurityException("restricted test route") }
+        val resolver = SmartOfflineEndpoint(FakeDownloadNetwork(route), OkHttpClient())
+        val settings = account.copy(lanUrl = "https://home.test/jellyfin/")
+        assertThrows(IOException::class.java) { runBlocking { resolver.resolve(settings, remote) } }
+        assertFalse(resolver.resolve(settings.copy(remoteFallback = true), remote).lan)
+    }
+
     private fun network(server: LocalHttpFixture) = FakeDownloadNetwork(
         DirectWifiRoute(RedirectToFixtureSockets(server.port)) { listOf(InetAddress.getByName("192.168.1.2")) },
     )
 
-    @Test fun `reachable LAN with trusted TLS and matching identity is chosen without probe credentials`() = runBlocking {
+    @Test
+    fun `trusted matching LAN is chosen without probe credentials`() = runBlocking {
         LocalHttpFixture(tls = true).use { server ->
             val resolver = SmartOfflineEndpoint(network(server), server.trustedClient)
             val endpoint = resolver.resolve(account.copy(lanUrl = "https://home.test:${server.port}/jellyfin/"), remote)
@@ -76,14 +85,17 @@ class SmartOfflineEndpointTest {
             val untrusted = SmartOfflineEndpoint(network(server), OkHttpClient())
             assertFalse(untrusted.resolve(configured, remote).lan)
             assertTrue(server.requests.isEmpty())
-            server.handler = { server.respond(it, 302, ByteArray(0), mapOf("Location" to "http://home.test/insecure"), -1) }
+            server.handler = {
+                server.respond(it, 302, ByteArray(0), mapOf("Location" to "http://home.test/insecure"), -1)
+            }
             assertFalse(SmartOfflineEndpoint(network(server), server.trustedClient).resolve(configured, remote).lan)
             assertEquals(1, server.requests.size)
             assertNull(server.requests.single().authorization)
         }
     }
 
-    @Test fun `LAN must resolve entirely to local addresses and fallback must use permitted active route`() = runBlocking {
+    @Test
+    fun `LAN addresses and fallback route must both be permitted`() = runBlocking {
         LocalHttpFixture(tls = true).use { server ->
             val route = DirectWifiRoute(RedirectToFixtureSockets(server.port)) {
                 listOf(InetAddress.getByName("192.168.1.2"), InetAddress.getByName("8.8.8.8"))
@@ -103,5 +115,29 @@ class SmartOfflineEndpointTest {
         val resolver = SmartOfflineEndpoint(network, OkHttpClient())
         assertThrows(IOException::class.java) { runBlocking { resolver.resolve(account, remote) } }
         assertFalse(resolver.resolve(account.copy(remoteFallback = true), remote).lan)
+    }
+
+    @Test
+    fun `cleartext LAN configuration never sends even an identity probe`() = runBlocking {
+        LocalHttpFixture().use { server ->
+            val resolver = SmartOfflineEndpoint(network(server), server.trustedClient)
+            val configured = account.copy(lanUrl = server.url, remoteFallback = true)
+            assertFalse(resolver.resolve(configured, remote).lan)
+            assertTrue(server.requests.isEmpty())
+        }
+    }
+
+    @Test
+    fun `an unpinned server identity cannot authorize authenticated LAN requests`() = runBlocking {
+        LocalHttpFixture(tls = true).use { server ->
+            val resolver = SmartOfflineEndpoint(network(server), server.trustedClient)
+            val configured = account.copy(
+                lanUrl = "https://home.test:${server.port}/jellyfin/",
+                serverIdentity = "",
+                remoteFallback = true,
+            )
+            assertFalse(resolver.resolve(configured, remote).lan)
+            assertNull(server.requests.single().authorization)
+        }
     }
 }

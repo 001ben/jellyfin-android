@@ -189,5 +189,5 @@ val applicationModule = module {
     single { DownloadQueue(get(), get(), get(), get(), get(), get()) }
     single { FileDownloader(get()) }
     single { SmartOfflineEndpoint(get<Context>(), get()) }
-    single { SmartOfflineManager(get(), get(), get(), get(), get(), get(), get()) }
+    single { SmartOfflineManager(get(), get(), get(), get(), get(), get()) }
 }
