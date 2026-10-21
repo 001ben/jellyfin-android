@@ -9,9 +9,12 @@ import org.jellyfin.mobile.data.dao.DownloadDao
 import org.jellyfin.mobile.data.entity.DownloadEntity
 import org.jellyfin.mobile.data.entity.ServerEntity
 import org.jellyfin.mobile.data.entity.UserEntity
+import org.jellyfin.mobile.downloads.smart.SmartOfflineManager
 import org.jellyfin.sdk.api.client.ApiClient
 import org.jellyfin.sdk.api.client.extensions.itemsApi
 import org.jellyfin.sdk.model.api.ItemFields
+import org.koin.core.component.KoinComponent
+import org.koin.core.component.inject
 import java.util.UUID
 
 class DownloadManager(
@@ -20,7 +23,8 @@ class DownloadManager(
     private val downloadDao: DownloadDao,
     private val appPreferences: AppPreferences,
     private val storageManager: StorageManager,
-) {
+) : KoinComponent {
+    private val smartOffline by inject<SmartOfflineManager>()
     companion object {
         /**
          * How many items can be processed at once in [enqueueItems]. If more items are enqueued at once they will be
@@ -53,6 +57,7 @@ class DownloadManager(
 
             for (item in response.items) {
                 var downloadEntity = existingItems[item.id]
+                if (downloadEntity?.path?.startsWith("smart-offline/") == true) continue
                 if (downloadEntity != null) {
                     // If the item already exists we just update the local information for it and requeue it
                     // this will force the download worker to recheck the local file in case it is missing or changed
@@ -82,6 +87,7 @@ class DownloadManager(
     }
 
     suspend fun resume(downloadEntity: DownloadEntity) = withContext(Dispatchers.IO) {
+        if (smartOffline.resume(downloadEntity.id)) return@withContext
         downloadDao.update(
             downloadEntity.copy(
                 status = DownloadStatus.QUEUED,
@@ -104,6 +110,7 @@ class DownloadManager(
     }
 
     suspend fun delete(id: Long, deleteFiles: Boolean) = withContext(Dispatchers.IO) {
+        if (smartOffline.remove(id, deleteFiles)) return@withContext
         val download = downloadDao.getDownload(id) ?: return@withContext
 
         downloadDao.delete(id)

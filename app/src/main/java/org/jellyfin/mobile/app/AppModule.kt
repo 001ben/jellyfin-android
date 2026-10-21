@@ -34,6 +34,8 @@ import org.jellyfin.mobile.downloads.DownloadNotificationManager
 import org.jellyfin.mobile.downloads.DownloadQueue
 import org.jellyfin.mobile.downloads.DownloadsViewModel
 import org.jellyfin.mobile.downloads.FileDownloader
+import org.jellyfin.mobile.downloads.smart.SmartOfflineEndpoint
+import org.jellyfin.mobile.downloads.smart.SmartOfflineManager
 import org.jellyfin.mobile.events.ActivityEventHandler
 import org.jellyfin.mobile.player.deviceprofile.DeviceProfileBuilder
 import org.jellyfin.mobile.player.interaction.PlayerEvent
@@ -186,4 +188,6 @@ val applicationModule = module {
     single { DownloadNotificationManager(get()) }
     single { DownloadQueue(get(), get(), get(), get(), get(), get()) }
     single { FileDownloader(get()) }
+    single { SmartOfflineEndpoint(get<Context>(), get()) }
+    single { SmartOfflineManager(get(), get(), get(), get(), get(), get(), get()) }
 }

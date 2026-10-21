@@ -13,6 +13,7 @@ class LocalJellyfinMediaSource(
     playSessionId: String,
     playbackDetails: PlaybackDetails? = null,
     val remoteFileUri: Uri,
+    val downloadId: Long,
 ) : JellyfinMediaSource(itemId, item, sourceInfo, playSessionId, playbackDetails) {
     override val playMethod: PlayMethod = PlayMethod.DIRECT_PLAY
 }

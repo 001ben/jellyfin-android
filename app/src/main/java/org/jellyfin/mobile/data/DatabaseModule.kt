@@ -1,6 +1,7 @@
 package org.jellyfin.mobile.data
 
 import androidx.room.Room
+import org.jellyfin.mobile.downloads.smart.SmartOfflineDatabase
 import org.koin.android.ext.koin.androidApplication
 import org.koin.dsl.module
 
@@ -14,4 +15,6 @@ val databaseModule = module {
     single { get<JellyfinDatabase>().serverDao }
     single { get<JellyfinDatabase>().userDao }
     single { get<JellyfinDatabase>().downloadDao }
+    single { Room.databaseBuilder(androidApplication(), SmartOfflineDatabase::class.java, "smart-offline").build() }
+    single { get<SmartOfflineDatabase>().smartOfflineDao }
 }
