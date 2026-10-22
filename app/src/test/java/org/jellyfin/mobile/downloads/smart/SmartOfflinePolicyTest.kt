@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import java.net.URI
 import java.time.LocalDateTime
 import java.util.UUID
 
@@ -91,5 +92,48 @@ class SmartOfflinePolicyTest {
     @Test fun `retry policy distinguishes transient failures from invalid credentials or redirects`() {
         listOf(408, 429, 500, 503).forEach { assertTrue(SmartOfflinePolicy.retryable(it)) }
         listOf(301, 401, 403, 404, 416).forEach { assertFalse(SmartOfflinePolicy.retryable(it)) }
+    }
+
+    @Test
+    fun `trusted HTTP requires canonical private IPv4 with an explicit port`() {
+        val privateHost = listOf(192, 168, 1, 2).joinToString(".")
+        val url = URI("http", null, privateHost, 80, "/jellyfin/", null, null).toASCIIString()
+        val canonical = url.trimEnd('/')
+        assertEquals(canonical, SmartOfflinePolicy.lanUrl(" $url "))
+        assertEquals(canonical, SmartOfflinePolicy.httpConsentUrl(url, confirmed = true))
+        assertEquals("", SmartOfflinePolicy.httpConsentUrl(url, confirmed = false))
+        assertEquals("", SmartOfflinePolicy.httpConsentUrl("https://home.example", confirmed = true))
+    }
+
+    @Test
+    fun `HTTP rejects hostnames public CGNAT link-local IPv6 and alternate numeric forms`() {
+        val denied = listOf(
+            "home.example:8096", "8.8.8.8:8096", "100.64.1.2:8096", "169.254.1.2:8096",
+            "127.0.0.1:8096", "[fd00::1]:8096", "[fe80::1]:8096", "10.0.0.1",
+            "010.0.0.1:8096", "0x0a000001:8096", "167772161:8096", "10.0.0.256:8096",
+            "172.15.1.2:8096", "172.32.1.2:8096", "192.169.1.2:8096", "10.0.0.1:0",
+        )
+        denied.forEach { authority ->
+            assertThrows(IllegalArgumentException::class.java) { SmartOfflinePolicy.lanUrl("http://$authority") }
+        }
+    }
+
+    @Test
+    fun `HTTP consent is endpoint specific and absent in another account`() {
+        val url = URI(
+            "http",
+            null,
+            listOf(10, 0, 0, 7).joinToString("."),
+            8096,
+            "/jellyfin",
+            null,
+            null,
+        ).toASCIIString()
+        val consent = SmartOfflinePolicy.httpConsentUrl(url, confirmed = true)
+        val account = SmartOfflineAccount("1-2", 1, 2, lanUrl = url, trustedHttpLanUrl = consent)
+        assertTrue(SmartOfflinePolicy.isTrustedHttpLan(account))
+        assertFalse(SmartOfflinePolicy.isTrustedHttpLan(account.copy(lanUrl = "$url/other")))
+        assertFalse(SmartOfflinePolicy.isTrustedHttpLan(account.copy(lanUrl = url.replace(":8096", ":8097"))))
+        assertFalse(SmartOfflinePolicy.isTrustedHttpLan(SmartOfflineAccount("3-4", 3, 4, lanUrl = url)))
     }
 }

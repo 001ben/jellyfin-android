@@ -12,9 +12,11 @@ import androidx.work.ExistingWorkPolicy
 import androidx.work.ForegroundInfo
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.Operation
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import androidx.work.await
 import androidx.work.workDataOf
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
@@ -57,6 +59,7 @@ class SmartOfflineWorker(context: Context, parameters: WorkerParameters) :
             withTimeout(TimeUnit.MINUTES.toMillis(MAX_PASS_MINUTES)) { manager.reconcile(key) }
             Result.success()
         } catch (_: TimeoutCancellationException) {
+            dao.status(key, "Check paused at Android time limit; will retry")
             Result.retry()
         } catch (error: CancellationException) {
             throw error
@@ -78,30 +81,43 @@ class SmartOfflineWorker(context: Context, parameters: WorkerParameters) :
         private const val NOTIFICATION_ID_MASK = 0x3fffffff
         private const val MAX_PASS_MINUTES = 8L
 
+        fun uniqueName(accountKey: String): String = "smart-offline-$accountKey"
+
         fun schedule(context: Context, account: SmartOfflineAccount) {
+            schedulingOperations(context, account)
+        }
+
+        suspend fun scheduleAndAwait(context: Context, account: SmartOfflineAccount) {
+            schedulingOperations(context, account).forEach { it.await() }
+        }
+
+        private fun schedulingOperations(context: Context, account: SmartOfflineAccount): List<Operation> {
             val work = WorkManager.getInstance(context)
-            val name = "smart-offline-${account.key}"
+            val name = uniqueName(account.key)
             if (!account.enabled) {
-                work.cancelUniqueWork(name)
-                work.cancelUniqueWork("$name-now")
-                return
+                return listOf(work.cancelUniqueWork(name), work.cancelUniqueWork("$name-now"))
             }
             val constraints = Constraints.Builder().setRequiredNetworkType(
                 if (account.wifiOnly) NetworkType.UNMETERED else NetworkType.CONNECTED,
             ).setRequiresStorageNotLow(true).build()
             val data = workDataOf("account" to account.key)
-            work.enqueueUniquePeriodicWork(
+            val requested = "$SMART_OFFLINE_REQUEST_TAG${System.currentTimeMillis()}"
+            val periodic = work.enqueueUniquePeriodicWork(
                 name,
                 ExistingPeriodicWorkPolicy.UPDATE,
                 PeriodicWorkRequestBuilder<SmartOfflineWorker>(1, TimeUnit.HOURS).setConstraints(constraints)
-                    .setInputData(data).setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 1, TimeUnit.MINUTES).build()
+                    .setInputData(
+                        data
+                    ).addTag(requested).setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 1, TimeUnit.MINUTES).build()
             )
-            work.enqueueUniqueWork(
+            val immediate = work.enqueueUniqueWork(
                 "$name-now",
                 ExistingWorkPolicy.REPLACE,
                 OneTimeWorkRequestBuilder<SmartOfflineWorker>().setConstraints(constraints).setInputData(data)
+                    .addTag(requested)
                     .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 1, TimeUnit.MINUTES).build()
             )
+            return listOf(periodic, immediate)
         }
     }
 }

@@ -80,6 +80,7 @@ internal class OfflinePlaybackSync(
             settings.copy(wifiOnly = false, remoteFallback = true),
             requireNotNull(remote.baseUrl),
         )
-        return scopedDownloadApi(remote, endpoint)
+        // The HTTP opt-in authorizes media transfers; watched-state writes retain the original remote trust boundary.
+        return if (endpoint.trustedHttpLan) remote else scopedDownloadApi(remote, endpoint)
     }
 }

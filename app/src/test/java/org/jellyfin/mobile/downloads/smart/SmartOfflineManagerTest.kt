@@ -2,12 +2,14 @@ package org.jellyfin.mobile.downloads.smart
 
 import android.content.Context
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkObject
 import io.mockk.unmockkObject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import org.jellyfin.mobile.app.ApiClientController
 import org.jellyfin.mobile.data.JellyfinDatabase
@@ -49,6 +51,81 @@ class SmartOfflineManagerTest {
     private val managed = mutableMapOf<Long, SmartOfflineManaged>()
     private val rows = mutableMapOf<Long, DownloadEntity>()
     private val account = SmartOfflineAccount("1-2", 1, 2, enabled = true, cleanup = true, serverIdentity = "server-A")
+
+    @Test
+    fun `trusted HTTP cannot supply watched confirmation for automatic cleanup`() = runBlocking {
+        LocalHttpFixture().use { remote ->
+            LocalHttpFixture().use { lan ->
+                val resolver = trustedHttpResolver(lan)
+                val manager = setup(resolver)
+                val download = row()
+                val settings = account.copy(lanUrl = lan.url, trustedHttpLanUrl = lan.url)
+                coEvery { dao.account(any()) } returns settings
+                coEvery { dao.managed(any()) } answers { managed.values.toList() }
+                coEvery { dao.series(any()) } returns listOf(
+                    SmartOfflineSeries("series", account.key, UUID.randomUUID().toString(), "Series")
+                )
+                every { controller.getApiClient(1, 2) } returns api(remote.url)
+                remote.handler = { remote.respond(it, 200, watchedResponse(download, false)) }
+                lan.handler = { lan.respond(it, 200, watchedResponse(download, true)) }
+
+                manager.reconcile(account.key)
+
+                assertTrue(File(directory.toFile(), download.path).exists())
+                assertTrue(rows.containsKey(download.id))
+                assertEquals(1, remote.requests.size)
+                assertEquals(1, lan.requests.size)
+                coVerify { dao.status(account.key, "Using explicitly trusted HTTP over direct Wi-Fi") }
+            }
+        }
+    }
+
+    @Test
+    fun `trusted HTTP media endpoint cannot receive offline watch-state writes`() = runBlocking {
+        LocalHttpFixture().use { remote ->
+            LocalHttpFixture().use { lan ->
+                val resolver = trustedHttpResolver(lan)
+                val manager = setup(resolver)
+                val download = row()
+                coEvery { dao.account(any()) } returns account.copy(lanUrl = lan.url, trustedHttpLanUrl = lan.url)
+                every { controller.getApiClient(1, 2) } returns api(remote.url)
+                remote.handler = { exchange ->
+                    if (exchange.requestURI.path.contains("Stopped")) {
+                        remote.respond(exchange, 204, ByteArray(0), length = -1)
+                    } else {
+                        remote.respond(exchange, 200, watchedUserData(download, true).toByteArray())
+                    }
+                }
+                manager.record(OfflinePlaybackSnapshot(download.id, 1000, true, stopped = false))
+
+                manager.syncProgress()
+
+                assertTrue(outbox.isEmpty())
+                assertEquals(2, remote.requests.size)
+                assertTrue(lan.requests.isEmpty())
+                coVerify(exactly = 1) { resolver.resolve(any(), any()) }
+            }
+        }
+    }
+
+    private fun trustedHttpResolver(lan: LocalHttpFixture): SmartOfflineEndpoint {
+        val resolver = mockk<SmartOfflineEndpoint>()
+        every { resolver.allowed(any<Boolean>()) } returns true
+        coEvery { resolver.resolve(any(), any()) } returns VerifiedDownloadEndpoint(
+            lan.url.toHttpUrl(), OkHttpClient.Builder().followRedirects(false).build(), true,
+        )
+        return resolver
+    }
+
+    private fun watchedUserData(download: DownloadEntity, played: Boolean): String =
+        "{\"Key\":\"test\",\"ItemId\":\"${download.itemId}\",\"PlaybackPositionTicks\":0," +
+            "\"Played\":$played,\"PlayCount\":1,\"IsFavorite\":false}"
+
+    private fun watchedResponse(download: DownloadEntity, played: Boolean): ByteArray =
+        (
+            "{\"Items\":[{\"Id\":\"${download.itemId}\",\"Type\":\"Episode\",\"UserData\":" +
+                watchedUserData(download, played) + "}],\"TotalRecordCount\":1,\"StartIndex\":0}"
+            ).toByteArray()
 
     @Test
     fun `account server or item mismatch prevents deletion of the referenced record`() = runBlocking {
@@ -209,7 +286,7 @@ class SmartOfflineManagerTest {
             if (outbox[id]?.revision == secondArg<String>()) outbox[id] = outbox.getValue(id).copy(stopReported = true)
         }
         every { users.getUser(2) } returns UserEntity(2, 1, UUID.randomUUID(), "test-token", 0)
-        return SmartOfflineManager(context, database, dao, users, controller, endpoint)
+        return SmartOfflineManager(context, SmartOfflinePersistence(database, dao), users, controller, endpoint)
     }
 
     private fun row(id: Long = 9): DownloadEntity {

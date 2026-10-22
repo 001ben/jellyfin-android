@@ -2,6 +2,7 @@ package org.jellyfin.mobile.downloads.smart
 
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
+import okhttp3.Request
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
@@ -13,6 +14,7 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketAddress
+import java.net.URI
 import javax.net.SocketFactory
 
 class RedirectToFixtureSockets(private val port: Int) : SocketFactory() {
@@ -138,6 +140,67 @@ class SmartOfflineEndpointTest {
             )
             assertFalse(resolver.resolve(configured, remote).lan)
             assertNull(server.requests.single().authorization)
+        }
+    }
+
+    private fun httpUrl(server: LocalHttpFixture): String = URI(
+        "http",
+        null,
+        listOf(192, 168, 1, 2).joinToString("."),
+        server.port,
+        "/jellyfin",
+        null,
+        null,
+    ).toASCIIString()
+
+    @Test
+    fun `consented HTTP uses direct Wi-Fi and checks identity before credentials`() = runBlocking {
+        LocalHttpFixture().use { server ->
+            val resolver = SmartOfflineEndpoint(network(server), server.trustedClient)
+            val url = httpUrl(server)
+            val configured = account.copy(
+                lanUrl = url,
+                trustedHttpLanUrl = SmartOfflinePolicy.httpConsentUrl(url, true),
+            )
+            val endpoint = resolver.resolve(configured, remote)
+            assertTrue(endpoint.trustedHttpLan)
+            assertNull(server.requests.single().authorization)
+            val request = Request.Builder().url(endpoint.url).header("Authorization", "test-token").build()
+            endpoint.client.newCall(request).execute().close()
+            assertEquals("test-token", server.requests.last().authorization)
+        }
+    }
+
+    @Test
+    fun `HTTP endpoint edits invalidate consent and mismatched IDs never receive credentials`() = runBlocking {
+        LocalHttpFixture().use { server ->
+            val resolver = SmartOfflineEndpoint(network(server), server.trustedClient)
+            val url = httpUrl(server)
+            val configured = account.copy(lanUrl = "$url/changed", trustedHttpLanUrl = url, remoteFallback = true)
+            assertFalse(resolver.resolve(configured, remote).lan)
+            assertTrue(server.requests.isEmpty())
+            server.handler = { server.respond(it, 200, "{\"Id\":\"other-server\"}".toByteArray()) }
+            assertFalse(resolver.resolve(configured.copy(lanUrl = url), remote).lan)
+            assertNull(server.requests.single().authorization)
+        }
+    }
+
+    @Test
+    fun `consented HTTP does not follow redirects or substitute a non-Wi-Fi route`() = runBlocking {
+        LocalHttpFixture().use { server ->
+            val route = network(server)
+            val resolver = SmartOfflineEndpoint(route, server.trustedClient)
+            val url = httpUrl(server)
+            val configured = account.copy(lanUrl = url, trustedHttpLanUrl = url, remoteFallback = true)
+            server.handler = {
+                server.respond(it, 302, ByteArray(0), mapOf("Location" to "$url/other"), -1)
+            }
+            assertFalse(resolver.resolve(configured, remote).lan)
+            assertEquals(1, server.requests.size)
+            assertNull(server.requests.single().authorization)
+            route.direct = null
+            assertFalse(resolver.resolve(configured, remote).lan)
+            assertEquals(1, server.requests.size)
         }
     }
 }

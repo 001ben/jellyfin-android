@@ -120,6 +120,8 @@ android {
     room {
         schemaDirectory("$projectDir/schemas")
     }
+
+    sourceSets.getByName("androidTest").assets.srcDir("$projectDir/schemas")
 }
 
 base.archivesName.set("jellyfin-android-v${project.getVersionName()}")
@@ -189,6 +191,12 @@ dependencies {
     testImplementation(libs.mockk)
     testImplementation(libs.okhttp.tls)
     androidTestImplementation(libs.bundles.androidx.test)
+    androidTestImplementation(libs.compose.ui.test.junit4)
+    androidTestImplementation(libs.androidx.room.testing)
+    // The empty Compose test host is only packaged for isolated emulator tests, never normal debug builds.
+    if (providers.gradleProperty("uiTests").orNull == "true") {
+        debugImplementation(libs.compose.ui.test.manifest)
+    }
 
     // Formatting rules for detekt
     detektPlugins(libs.detekt.formatting)

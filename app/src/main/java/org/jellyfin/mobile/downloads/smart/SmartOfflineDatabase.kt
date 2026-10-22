@@ -1,5 +1,6 @@
 package org.jellyfin.mobile.downloads.smart
 
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Entity
@@ -8,7 +9,11 @@ import androidx.room.OnConflictStrategy
 import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.RoomDatabase
+import androidx.room.Transaction
 import androidx.room.TypeConverters
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
+import kotlinx.coroutines.flow.Flow
 import org.jellyfin.mobile.data.JellyfinDatabase
 import org.jellyfin.sdk.model.api.BaseItemDto
 
@@ -26,6 +31,7 @@ data class SmartOfflineAccount(
     val lanUrl: String = "",
     val serverIdentity: String = "",
     val status: String = "",
+    @ColumnInfo(defaultValue = "''") val trustedHttpLanUrl: String = "",
 )
 
 @Entity(tableName = "series")
@@ -66,8 +72,25 @@ interface SmartOfflineDao {
     @Query("SELECT * FROM account WHERE `key` = :key")
     suspend fun account(key: String): SmartOfflineAccount?
 
+    @Query("SELECT * FROM account WHERE `key` = :key")
+    fun observeAccount(key: String): Flow<SmartOfflineAccount?>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun save(account: SmartOfflineAccount)
+
+    @Transaction
+    suspend fun saveSettings(settings: SmartOfflineAccount): SmartOfflineAccount {
+        val previous = account(settings.key)
+        val saved = settings.copy(
+            serverIdentity = previous?.serverIdentity.orEmpty(),
+            status = previous?.status.orEmpty(),
+        )
+        save(saved)
+        return saved
+    }
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertAccountIfMissing(account: SmartOfflineAccount): Long
 
     @Query("UPDATE account SET status = :status WHERE `key` = :key")
     suspend fun status(key: String, status: String)
@@ -79,6 +102,9 @@ interface SmartOfflineDao {
     suspend fun series(
         account: String
     ): List<SmartOfflineSeries>
+
+    @Query("SELECT * FROM series WHERE account = :account ORDER BY name")
+    fun observeSeries(account: String): Flow<List<SmartOfflineSeries>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun subscribe(series: SmartOfflineSeries)
@@ -126,10 +152,19 @@ interface SmartOfflineDao {
         SmartOfflineManaged::class,
         OfflineProgress::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = true,
 )
 @TypeConverters(JellyfinDatabase.Converters::class)
 abstract class SmartOfflineDatabase : RoomDatabase() {
     abstract val smartOfflineDao: SmartOfflineDao
+
+    companion object {
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Existing accounts have no HTTP trust; consent is never inferred during an upgrade.
+                db.execSQL("ALTER TABLE account ADD COLUMN trustedHttpLanUrl TEXT NOT NULL DEFAULT ''")
+            }
+        }
+    }
 }

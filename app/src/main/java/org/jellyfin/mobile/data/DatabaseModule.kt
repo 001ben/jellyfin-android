@@ -15,6 +15,10 @@ val databaseModule = module {
     single { get<JellyfinDatabase>().serverDao }
     single { get<JellyfinDatabase>().userDao }
     single { get<JellyfinDatabase>().downloadDao }
-    single { Room.databaseBuilder(androidApplication(), SmartOfflineDatabase::class.java, "smart-offline").build() }
+    single {
+        Room.databaseBuilder(androidApplication(), SmartOfflineDatabase::class.java, "smart-offline")
+            .addMigrations(SmartOfflineDatabase.MIGRATION_1_2)
+            .build()
+    }
     single { get<SmartOfflineDatabase>().smartOfflineDao }
 }
