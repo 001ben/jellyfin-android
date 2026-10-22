@@ -63,6 +63,7 @@ class SmartOfflineUiStateTest {
             model.load().join()
             assertEquals(0, source.writes)
             assertEquals(0, source.searches)
+            assertEquals(0, source.contextRequests)
             assertFalse(model.state.value.busy)
             source.account.value = source.account.value.copy(status = "Waiting for verified LAN")
             source.work.value = SmartOfflineStatus(SmartOfflineWorkState.RUNNING, automaticScheduled = true)
@@ -149,6 +150,49 @@ class SmartOfflineUiStateTest {
         }
     }
 
+    @Test
+    fun `explicit context loads one show without selecting it and browse permits an empty query`() = runBlocking {
+        val source = FakeUiSource()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        try {
+            val item = BaseItemDto(id = UUID.randomUUID(), name = "Context show", type = BaseItemKind.SERIES)
+            source.contextItem = item
+            val model = SmartOfflineViewModel(source, { 1L to 2L }, scope)
+            model.load(item.id).join()
+            assertEquals(item, model.state.value.contextualSeries)
+            assertEquals(1, source.contextRequests)
+            assertEquals(0, source.writes)
+            assertTrue(model.state.value.series.isEmpty())
+            model.search("")
+            source.searchStarted.await()
+            withTimeout(TEST_TIMEOUT) { model.state.first { !it.busy } }
+            assertEquals("", source.lastQuery)
+            assertEquals(1, source.searches)
+            assertEquals(0, source.writes)
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun `identity change blocks old settings selection and browsing before reload`() = runBlocking {
+        val source = FakeUiSource()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        var identity = 1L to 2L
+        try {
+            val model = SmartOfflineViewModel(source, { identity }, scope)
+            model.load().join()
+            identity = 3L to 4L
+            model.save(source.account.value.copy(nextCount = 6)).join()
+            model.toggle(BaseItemDto(id = UUID.randomUUID(), type = BaseItemKind.SERIES), true).join()
+            model.search("Show")
+            assertEquals(0, source.writes)
+            assertEquals(0, source.searches)
+        } finally {
+            scope.cancel()
+        }
+    }
+
     private class FakeUiSource : SmartOfflineUiSource {
         val account = MutableStateFlow(SmartOfflineAccount("1-2", 1, 2, enabled = true))
         val series = MutableStateFlow<List<SmartOfflineSeries>>(emptyList())
@@ -160,6 +204,9 @@ class SmartOfflineUiStateTest {
         var schedulingFailed = false
         var writes = 0
         var searches = 0
+        var contextRequests = 0
+        var contextItem: BaseItemDto? = null
+        var lastQuery: String? = null
 
         override fun observeAccount(server: Long, user: Long): Flow<SmartOfflineAccount> = account
         override fun observeSeries(key: String): Flow<List<SmartOfflineSeries>> = series
@@ -189,9 +236,15 @@ class SmartOfflineUiStateTest {
 
         override suspend fun search(account: SmartOfflineAccount, query: String): List<BaseItemDto> {
             searches++
+            lastQuery = query
             searchStarted.complete(Unit)
             searchGate?.await()
             return emptyList()
+        }
+
+        override suspend fun findSeries(account: SmartOfflineAccount, id: UUID): BaseItemDto? {
+            contextRequests++
+            return contextItem?.takeIf { it.id == id }
         }
     }
 

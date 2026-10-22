@@ -2,6 +2,8 @@ package org.jellyfin.mobile.downloads.smart
 
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -35,11 +37,21 @@ internal class OfflinePlaybackJournal(
     private val generation = UUID.randomUUID().toString()
     private val latestSequence = mutableMapOf<String, Long>()
     private val playing = Collections.newSetFromMap(ConcurrentHashMap<Long, Boolean>())
+    private val active = MutableStateFlow<Set<Long>>(emptySet())
+    val activeDownloads = active.asStateFlow()
     private val sessions = mutableMapOf<Long, String>()
 
     fun isPlaying(id: Long): Boolean = id in playing
 
     suspend fun <T> withPlaybackLease(action: suspend () -> T): T = mutex.withLock { action() }
+
+    suspend fun abandon(id: Long, session: String) = withPlaybackLease {
+        if (sessions[id] == session) {
+            sessions.remove(id)
+            playing.remove(id)
+            active.value = playing.toSet()
+        }
+    }
 
     suspend fun started(id: Long, session: String): Boolean = withPlaybackLease {
         val download = downloads.getDownload(id) ?: return@withPlaybackLease false
@@ -48,6 +60,7 @@ internal class OfflinePlaybackJournal(
         if (owned != null && !ownedMatches(owned, download)) return@withPlaybackLease false
         if (owned != null && !complete(owned)) return@withPlaybackLease false
         playing.add(id)
+        active.value = playing.toSet()
         sessions[id] = session
         true
     }
@@ -112,6 +125,7 @@ internal class OfflinePlaybackJournal(
         if (snapshot.session != null && sessions[snapshot.downloadId] != snapshot.session) return
         sessions.remove(snapshot.downloadId)
         playing.remove(snapshot.downloadId)
+        active.value = playing.toSet()
         OfflineProgressWorker.enqueue(context)
     }
 }

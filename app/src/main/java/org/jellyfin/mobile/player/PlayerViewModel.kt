@@ -635,6 +635,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
             player.currentPosition <= Constants.MAX_SKIP_TO_PREV_MS -> viewModelScope.launch {
                 pause()
                 if (!queueManager.previous()) {
+                    showQueuePlaybackError()
                     // Skip to previous failed, go to start of video anyway
                     playerOrNull?.seekTo(0)
                     play()
@@ -647,8 +648,18 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
 
     fun skipToNext() {
         viewModelScope.launch {
-            queueManager.next()
+            if (!queueManager.next()) showQueuePlaybackError()
         }
+    }
+
+    private fun showQueuePlaybackError() {
+        val message = when (queueManager.navigationError) {
+            is PlayerException.InvalidPlayOptions -> R.string.player_error_invalid_play_options
+            is PlayerException.NetworkFailure -> R.string.player_error_network_failure
+            is PlayerException.UnsupportedContent -> R.string.player_error_unsupported_content
+            null -> return // Reaching the end of a queue is not an error.
+        }
+        _error.postValue(getApplication<Application>().getString(message))
     }
 
     fun skipMediaSegment(mediaSegmentDto: MediaSegmentDto?) {
@@ -763,14 +774,18 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                 Player.STATE_READY, Player.STATE_BUFFERING -> {
                     player.reportPlaybackState()
                 }
-                Player.STATE_ENDED -> {
-                    reportPlaybackStop()
-                    if (!autoPlayNextEpisodeEnabled || !queueManager.next()) {
-                        releasePlayer()
-                    }
-                }
+                Player.STATE_ENDED -> finishAndAdvanceQueue()
             }
         }
+    }
+
+    private suspend fun finishAndAdvanceQueue() {
+        reportPlaybackStop()
+        if (autoPlayNextEpisodeEnabled) {
+            if (queueManager.next()) return
+            showQueuePlaybackError()
+        }
+        releasePlayer()
     }
 
     override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {

@@ -30,6 +30,7 @@ import org.jellyfin.mobile.bridge.ExternalPlayer
 import org.jellyfin.mobile.bridge.MediaSegments
 import org.jellyfin.mobile.bridge.NativeInterface
 import org.jellyfin.mobile.bridge.NativePlayer
+import org.jellyfin.mobile.bridge.SmartOfflineWebBridge
 import org.jellyfin.mobile.data.entity.ServerEntity
 import org.jellyfin.mobile.databinding.FragmentWebviewBinding
 import org.jellyfin.mobile.setup.ConnectFragment
@@ -46,8 +47,10 @@ import org.jellyfin.mobile.utils.fadeIn
 import org.jellyfin.mobile.utils.isOutdated
 import org.jellyfin.mobile.utils.requestNoBatteryOptimizations
 import org.jellyfin.mobile.utils.runOnUiThread
+import org.koin.android.ext.android.get
 import org.koin.android.ext.android.inject
 import org.koin.androidx.viewmodel.ext.android.activityViewModel
+import org.koin.core.parameter.parametersOf
 
 class WebViewFragment : Fragment(), BackPressInterceptor, JellyfinWebChromeClient.FileChooserListener {
     val appPreferences: AppPreferences by inject()
@@ -189,6 +192,7 @@ class WebViewFragment : Fragment(), BackPressInterceptor, JellyfinWebChromeClien
         addJavascriptInterface(nativePlayer, "NativePlayer")
         addJavascriptInterface(externalPlayer, "ExternalPlayer")
         addJavascriptInterface(mediaSegments, "MediaSegments")
+        get<SmartOfflineWebBridge> { parametersOf(server, viewLifecycleOwner.lifecycleScope) }.attach(this)
 
         loadUrl("${server.hostname.trimEnd('/')}/")
         postDelayed(timeoutRunnable, Constants.INITIAL_CONNECTION_TIMEOUT)

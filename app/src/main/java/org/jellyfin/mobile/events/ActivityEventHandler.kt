@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.launch
 import org.jellyfin.mobile.MainActivity
 import org.jellyfin.mobile.R
+import org.jellyfin.mobile.app.AppPreferences
 import org.jellyfin.mobile.bridge.JavascriptCallback
 import org.jellyfin.mobile.downloads.DownloadsFragment
 import org.jellyfin.mobile.player.ui.PlayerFragment
@@ -26,6 +27,7 @@ import timber.log.Timber
 
 class ActivityEventHandler(
     private val webappFunctionChannel: WebappFunctionChannel,
+    private val preferences: AppPreferences,
 ) {
     private val eventsFlow = MutableSharedFlow<ActivityEvent>(
         extraBufferCapacity = 10,
@@ -83,6 +85,16 @@ class ActivityEventHandler(
             ActivityEvent.OpenDownloads -> {
                 supportFragmentManager.addFragment<DownloadsFragment>()
             }
+            is ActivityEvent.OpenSmartOffline -> {
+                if (preferences.currentServerId == event.serverId && preferences.currentUserId == event.userId) {
+                    val args = Bundle().apply {
+                        putString(DownloadsFragment.SERIES_ID, event.seriesId.toString())
+                        putLong(DownloadsFragment.SERVER_ID, event.serverId)
+                        putLong(DownloadsFragment.USER_ID, event.userId)
+                    }
+                    supportFragmentManager.addFragment<DownloadsFragment>(args)
+                }
+            }
             is ActivityEvent.CastMessage -> {
                 val action = event.action
                 chromecast.execute(
@@ -121,4 +133,6 @@ class ActivityEventHandler(
     fun emit(event: ActivityEvent) {
         eventsFlow.tryEmit(event)
     }
+
+    fun tryEmit(event: ActivityEvent): Boolean = eventsFlow.tryEmit(event)
 }

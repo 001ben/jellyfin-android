@@ -270,6 +270,20 @@ class SmartOfflineManagerTest {
         }
         coEvery { dao.account(any()) } returns account
         coEvery { dao.owned(any()) } answers { managed[firstArg()] }
+        coEvery { dao.confirmedWatched(any(), any()) } answers {
+            val key = firstArg<String>()
+            managed.entries.firstOrNull { it.value.key == key }?.let {
+                managed[it.key] = it.value.copy(serverPlayed = secondArg())
+            }
+            Unit
+        }
+        coEvery { dao.invalidateWatchConfirmation(any()) } answers {
+            managed.replaceAll { _, entry -> entry.copy(serverPlayed = false) }
+        }
+        coEvery { dao.removed(any(), any(), any()) } answers {
+            managed.entries.removeAll { it.value.key == firstArg<SmartOfflineManaged>().key }
+            Unit
+        }
         coEvery { dao.progress(any()) } answers { outbox[firstArg()] }
         coEvery { dao.pending() } answers { outbox.values.toList() }
         coEvery {
@@ -338,6 +352,15 @@ class SmartOfflineManagerTest {
         manager.remove(row.id, true)
         assertTrue(File(directory.toFile(), row.path).exists())
         assertEquals("manual-download", rows[row.id]?.path)
+    }
+
+    @Test fun `missing file removal never invents a successful local cleanup event`() = runBlocking {
+        val manager = setup()
+        val row = row()
+        assertTrue(File(directory.toFile(), row.path).delete())
+        manager.remove(row.id, true)
+        coVerify(exactly = 0) { dao.removed(any(), any(), any()) }
+        coVerify(exactly = 1) { dao.forget("1-2-${row.itemId}") }
     }
 
     @Test fun `playback lease and pending watch event protect local files`() = runBlocking {

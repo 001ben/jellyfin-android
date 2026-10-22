@@ -7,10 +7,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.jellyfin.mobile.app.AppPreferences
 import org.jellyfin.mobile.app.StorageManager
 import org.jellyfin.mobile.data.dao.DownloadDao
 import org.jellyfin.mobile.data.entity.DownloadEntity
@@ -28,9 +30,13 @@ class DownloadsViewModel : ViewModel(), KoinComponent {
     private val downloadManager: DownloadManager by inject()
     private val activityEventHandler: ActivityEventHandler by inject()
     private val storageManager: StorageManager by inject()
+    private val preferences: AppPreferences by inject()
 
     val downloads: StateFlow<List<DownloadFiles>> = downloadDao
         .getAllDownloadsWithFiles()
+        .combine(preferences.currentAccountChanges) { downloads, account ->
+            downloads.filter { it.download.serverId == account.first && it.download.userId == account.second }
+        }
         .flowOn(Dispatchers.IO)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), emptyList())
 
@@ -41,6 +47,7 @@ class DownloadsViewModel : ViewModel(), KoinComponent {
     val storageLocationAccessible = _storageLocationAccessible.asStateFlow()
 
     fun openDownload(download: DownloadEntity) {
+        if (!currentAccountOwns(download)) return
         when (download.item.mediaType) {
             MediaType.VIDEO -> {
                 val playOptions = PlayOptions(
@@ -51,6 +58,8 @@ class DownloadsViewModel : ViewModel(), KoinComponent {
                     audioStreamIndex = null,
                     subtitleStreamIndex = null,
                     playFromDownloads = true,
+                    accountServerId = download.serverId,
+                    accountUserId = download.userId,
                 )
                 activityEventHandler.emit(ActivityEvent.LaunchNativePlayer(playOptions))
             }
@@ -78,13 +87,17 @@ class DownloadsViewModel : ViewModel(), KoinComponent {
     }
 
     fun download(download: DownloadEntity) {
+        if (!currentAccountOwns(download)) return
         viewModelScope.launch {
+            if (!currentAccountOwns(download)) return@launch
             downloadManager.resume(download)
         }
     }
 
     fun removeDownload(download: DownloadEntity, deleteFiles: Boolean) {
+        if (!currentAccountOwns(download)) return
         viewModelScope.launch {
+            if (!currentAccountOwns(download)) return@launch
             downloadManager.delete(download.id, deleteFiles)
         }
     }
@@ -94,4 +107,7 @@ class DownloadsViewModel : ViewModel(), KoinComponent {
         _storageLocation.value = storageManager.getStorageLocation()
         _storageLocationAccessible.value = storageManager.isStorageLocationAccessible()
     }
+
+    private fun currentAccountOwns(download: DownloadEntity): Boolean =
+        download.serverId == preferences.currentServerId && download.userId == preferences.currentUserId
 }

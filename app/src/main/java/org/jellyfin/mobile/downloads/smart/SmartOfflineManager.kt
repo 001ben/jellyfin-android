@@ -11,9 +11,7 @@ import kotlinx.coroutines.withContext
 import org.jellyfin.mobile.app.ApiClientController
 import org.jellyfin.mobile.data.JellyfinDatabase
 import org.jellyfin.mobile.data.dao.UserDao
-import org.jellyfin.sdk.api.client.extensions.itemsApi
 import org.jellyfin.sdk.model.api.BaseItemDto
-import org.jellyfin.sdk.model.api.BaseItemKind
 
 data class SmartOfflinePersistence(val database: JellyfinDatabase, val dao: SmartOfflineDao)
 
@@ -25,6 +23,7 @@ class SmartOfflineManager(
     endpoints: SmartOfflineEndpoint,
     private val schedule: suspend (SmartOfflineAccount) -> Unit = { SmartOfflineWorker.scheduleAndAwait(context, it) },
 ) {
+    val library = SmartOfflineLibrary(users, controller)
     private val database = persistence.database
     private val dao = persistence.dao
     private val mutex = Mutex()
@@ -44,6 +43,15 @@ class SmartOfflineManager(
 
     fun observeSeries(key: String): Flow<List<SmartOfflineSeries>> = dao.observeSeries(key)
 
+    fun observeCatalog(server: Long, user: Long): Flow<List<SmartOfflineCatalogItem>> =
+        SmartOfflineCatalogObserver(
+            context,
+            dao,
+            database.downloadDao,
+            journal,
+            store.activeTransfers
+        ).observe(server, user)
+
     suspend fun save(account: SmartOfflineAccount): SmartOfflineSaveResult = withContext(Dispatchers.IO) {
         require(account.nextCount in SmartOfflinePolicy.MIN_EPISODES..SmartOfflinePolicy.MAX_EPISODES)
         require(account.capGiB in SmartOfflinePolicy.MIN_CAP_GIB..SmartOfflinePolicy.MAX_CAP_GIB)
@@ -53,18 +61,6 @@ class SmartOfflineManager(
 
     suspend fun series(account: SmartOfflineAccount): List<SmartOfflineSeries> = dao.series(account.key)
 
-    suspend fun search(account: SmartOfflineAccount, query: String): List<BaseItemDto> = withContext(Dispatchers.IO) {
-        val user = users.getUser(account.userId) ?: return@withContext emptyList()
-        val result by controller.getApiClient(account.serverId, account.userId).itemsApi.getItems(
-            userId = user.userId,
-            searchTerm = query,
-            includeItemTypes = setOf(BaseItemKind.SERIES),
-            recursive = true,
-            limit = SERIES_SEARCH_LIMIT,
-        )
-        result.items
-    }
-
     suspend fun subscribe(
         account: SmartOfflineAccount,
         item: BaseItemDto,
@@ -73,7 +69,7 @@ class SmartOfflineManager(
         dao.insertAccountIfMissing(SmartOfflineAccount(account.key, account.serverId, account.userId))
         val key = "${account.key}-${item.id}"
         if (enabled) {
-            dao.subscribe(SmartOfflineSeries(key, account.key, item.id.toString(), item.name.orEmpty()))
+            dao.subscribe(SmartOfflineSeries(key, account.key, item.id.toString(), item.name.orEmpty(), item))
         } else {
             dao.unsubscribe(key)
         }
@@ -83,7 +79,7 @@ class SmartOfflineManager(
     }
 
     suspend fun started(id: Long, session: String = ""): Boolean = journal.started(id, session)
-    fun nextSequence(): Long = nextOfflineSequence()
+    suspend fun abandonPlayback(id: Long, session: String) = journal.abandon(id, session)
     suspend fun record(snapshot: OfflinePlaybackSnapshot) = journal.record(snapshot)
     suspend fun syncProgress() = sync.sync()
 
@@ -103,10 +99,6 @@ class SmartOfflineManager(
         val entry = dao.owned(id) ?: return false
         dao.account(entry.account)?.let { SmartOfflineWorker.schedule(context, it) }
         return true
-    }
-
-    private companion object {
-        const val SERIES_SEARCH_LIMIT = 50
     }
 }
 

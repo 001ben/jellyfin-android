@@ -35,6 +35,7 @@ export class ExternalPlayerPlugin {
 
     canPlayItem(item, playOptions) {
         return this._externalPlayer.isEnabled() &&
+            window.SmartOfflinePlayback?.canPlay(item) !== true &&
             playOptions.fullscreen &&
             !this.playbackManager.syncPlayEnabled;
     }

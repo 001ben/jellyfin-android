@@ -5,7 +5,9 @@ import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOf
 import org.jellyfin.sdk.model.api.BaseItemDto
+import java.util.UUID
 
 enum class SmartOfflineAction { NONE, LOAD, SAVE, SEARCH, TOGGLE }
 enum class SmartOfflineSaveFeedback { SAVED, SAVED_AND_QUEUED, SAVED_AND_DISABLED }
@@ -25,9 +27,15 @@ data class SmartOfflineUiState(
     val error: String = "",
     val saveFeedback: SmartOfflineSaveFeedback? = null,
     val status: SmartOfflineStatus = SmartOfflineStatus(),
+    val catalog: List<SmartOfflineCatalogItem> = emptyList(),
+    val artwork: Map<UUID, SmartOfflineArtwork> = emptyMap(),
+    val contextualSeries: BaseItemDto? = null,
+    val seriesFeedback: SmartOfflineSeriesFeedback? = null,
 ) {
     val busy: Boolean get() = action != SmartOfflineAction.NONE
 }
+
+data class SmartOfflineSeriesFeedback(val item: BaseItemDto, val selected: Boolean)
 
 data class SmartOfflineSaveResult(
     val account: SmartOfflineAccount,
@@ -91,9 +99,16 @@ interface SmartOfflineUiSource {
     fun observeAccount(server: Long, user: Long): Flow<SmartOfflineAccount>
     fun observeSeries(key: String): Flow<List<SmartOfflineSeries>>
     fun observeWork(key: String): Flow<SmartOfflineStatus>
+    fun observeCatalog(server: Long, user: Long): Flow<List<SmartOfflineCatalogItem>> = flowOf(emptyList())
     suspend fun save(account: SmartOfflineAccount): SmartOfflineSaveResult
     suspend fun toggle(account: SmartOfflineAccount, item: BaseItemDto, enabled: Boolean): SmartOfflineSaveResult
     suspend fun search(account: SmartOfflineAccount, query: String): List<BaseItemDto>
+    suspend fun findSeries(account: SmartOfflineAccount, id: UUID): BaseItemDto? = null
+    suspend fun artwork(
+        account: SmartOfflineAccount,
+        items: List<BaseItemDto>,
+        allowNetwork: Boolean,
+    ): Map<UUID, SmartOfflineArtwork> = emptyMap()
 }
 
 internal class ManagerSmartOfflineUiSource(
@@ -106,6 +121,8 @@ internal class ManagerSmartOfflineUiSource(
     ): Flow<SmartOfflineAccount> = manager.observeAccount(server, user)
     override fun observeSeries(key: String): Flow<List<SmartOfflineSeries>> = manager.observeSeries(key)
     override fun observeWork(key: String): Flow<SmartOfflineStatus> = observeSmartOfflineWork(context, key)
+    override fun observeCatalog(server: Long, user: Long): Flow<List<SmartOfflineCatalogItem>> =
+        manager.observeCatalog(server, user)
     override suspend fun save(account: SmartOfflineAccount): SmartOfflineSaveResult = manager.save(account)
     override suspend fun toggle(
         account: SmartOfflineAccount,
@@ -116,5 +133,14 @@ internal class ManagerSmartOfflineUiSource(
     override suspend fun search(
         account: SmartOfflineAccount,
         query: String
-    ): List<BaseItemDto> = manager.search(account, query)
+    ): List<BaseItemDto> = manager.library.search(account, query)
+    override suspend fun findSeries(account: SmartOfflineAccount, id: UUID): BaseItemDto? = manager.library.findSeries(
+        account,
+        id
+    )
+    override suspend fun artwork(
+        account: SmartOfflineAccount,
+        items: List<BaseItemDto>,
+        allowNetwork: Boolean,
+    ): Map<UUID, SmartOfflineArtwork> = manager.library.artwork(account, items, allowNetwork)
 }

@@ -3,6 +3,9 @@ package org.jellyfin.mobile.downloads.smart
 import android.content.Context
 import androidx.core.net.toUri
 import androidx.room.withTransaction
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import org.jellyfin.mobile.data.JellyfinDatabase
 import org.jellyfin.mobile.data.dao.UserDao
 import org.jellyfin.mobile.data.entity.DownloadEntity
@@ -14,21 +17,38 @@ import org.jellyfin.sdk.api.client.extensions.itemsApi
 import org.jellyfin.sdk.model.api.BaseItemDto
 import java.io.IOException
 import java.util.UUID
-import java.util.concurrent.TimeUnit
 
 private const val WATCH_REFRESH_BATCH = 50
+
+private suspend fun prepareIdleTransfer(
+    journal: OfflinePlaybackJournal,
+    entry: SmartOfflineManaged,
+    localId: Long?,
+): SmartOfflineManaged = journal.prepareTransfer(entry, localId) ?: throw IOException("Waiting for local playback")
 
 internal class SmartOfflineDownloadStore(
     context: Context,
     private val database: JellyfinDatabase,
     private val dao: SmartOfflineDao,
-    private val users: UserDao,
-    private val endpoints: SmartOfflineEndpoint,
+    users: UserDao,
+    endpoints: SmartOfflineEndpoint,
     private val journal: OfflinePlaybackJournal,
 ) {
     private val downloads = database.downloadDao
     private val paths = SmartOfflinePaths(context)
     private val transfer = SmartOfflineTransfer()
+    private val policy = SmartOfflineTransferPolicy(dao, users, endpoints)
+    private val transfers = MutableStateFlow<Set<String>>(emptySet())
+    val activeTransfers = transfers.asStateFlow()
+
+    suspend fun plan(account: SmartOfflineAccount, items: List<BaseItemDto>) {
+        for (item in items) {
+            if (!policy.subscribed(account, item)) continue
+            val existing = existingDownload(account, item.id)
+            val key = "${account.key}-${item.id}"
+            if (existing == null || existing.path == "smart-offline/$key") entry(account, item)
+        }
+    }
 
     suspend fun download(
         account: SmartOfflineAccount,
@@ -36,29 +56,56 @@ internal class SmartOfflineDownloadStore(
         api: ApiClient,
         item: BaseItemDto,
     ): Boolean {
-        requireCurrentSettings(account)
+        policy.requireCurrent(account)
+        if (!policy.subscribed(account, item)) return true
         val key = "${account.key}-${item.id}"
         val existing = existingDownload(account, item.id)
         if (existing != null && existing.path != "smart-offline/$key") return true
         val entry = entry(account, item)
         if (complete(entry, existing)) return true
         val budget = budget(account, entry, item) ?: return false
-        val pending = journal.prepareTransfer(entry, existing?.id) ?: throw IOException("Waiting for local playback")
-        val bytes = transfer.download(
-            SmartOfflineTransferRequest(endpoint, api, pending, paths.file(pending), budget),
-            permitted = transferPolicy(account, endpoint, api),
-            saveValidator = { dao.save(pending.copy(etag = it)) },
-        )
-        val id = register(account, entry, item, bytes)
-        dao.save(entry.copy(downloadId = id, bytes = bytes, etag = null))
+        val pending = prepareIdleTransfer(journal, entry, existing?.id)
+        dao.lifecycle(entry.key, SmartOfflineItemPhase.DOWNLOADING.name)
+        transfers.value += entry.key
+        try {
+            transferAndPublish(account, endpoint, api, pending, budget)
+        } catch (error: CancellationException) {
+            dao.lifecycle(entry.key, SmartOfflineItemPhase.WAITING.name, "Transfer interrupted; waiting to resume")
+            throw error
+        } catch (error: IOException) {
+            val reason = if (!policy.subscribed(
+                    account,
+                    item
+                )
+            ) {
+                "Series is no longer selected"
+            } else {
+                transferFailure(error)
+            }
+            dao.lifecycle(entry.key, SmartOfflineItemPhase.WAITING.name, reason)
+            throw error
+        } finally {
+            transfers.value -= entry.key
+        }
         return true
     }
 
-    private suspend fun requireCurrentSettings(account: SmartOfflineAccount) {
-        val latest = dao.account(account.key)
-        if (latest?.enabled != true || latest.copy(status = "") != account.copy(status = "")) {
-            throw IOException("Settings changed")
-        }
+    private suspend fun transferAndPublish(
+        account: SmartOfflineAccount,
+        endpoint: VerifiedDownloadEndpoint,
+        api: ApiClient,
+        pending: SmartOfflineManaged,
+        budget: Long,
+    ) {
+        val bytes = transfer.download(
+            SmartOfflineTransferRequest(endpoint, api, pending, paths.file(pending), budget),
+            permitted = policy.permitted(account, endpoint, api, pending.item),
+            saveValidator = { dao.validator(pending.key, it) },
+        )
+        policy.requireCurrent(account)
+        if (!policy.subscribed(account, pending.item)) throw IOException("Series deselected")
+        val id = register(account, pending, pending.item, bytes)
+        dao.published(pending.key, id, bytes)
     }
 
     private fun existingDownload(account: SmartOfflineAccount, item: UUID): DownloadEntity? =
@@ -70,7 +117,12 @@ internal class SmartOfflineDownloadStore(
         val key = "${account.key}-${item.id}"
         val existing = dao.managed(account.key).firstOrNull { it.key == key }
         if (existing != null) return existing
-        return SmartOfflineManaged(key, account.key, item).also { dao.save(it) }
+        return SmartOfflineManaged(
+            key,
+            account.key,
+            item,
+            expectedBytes = item.mediaSources?.firstOrNull()?.size?.takeIf { it > 0 },
+        ).also { dao.save(it) }
     }
 
     private fun complete(entry: SmartOfflineManaged, existing: DownloadEntity?): Boolean {
@@ -90,28 +142,9 @@ internal class SmartOfflineDownloadStore(
         val free = SmartOfflineDiskSpace.available(paths.root) + target.length()
         val size = item.mediaSources?.firstOrNull()?.size ?: 0
         if (SmartOfflinePolicy.fits(size, used, cap, free)) return cap - used
+        dao.lifecycle(entry.key, SmartOfflineItemPhase.WAITING.name, "Waiting for storage or a known episode size")
         dao.status(account.key, "Waiting for storage; unknown-size episodes are skipped")
         return null
-    }
-
-    private fun transferPolicy(
-        account: SmartOfflineAccount,
-        endpoint: VerifiedDownloadEndpoint,
-        api: ApiClient,
-    ): suspend () -> Boolean {
-        var checkedAt: Long? = null
-        var settingsAllowed = true
-        return {
-            val now = System.nanoTime()
-            val previousCheck = checkedAt
-            if (previousCheck == null || now - previousCheck >= TimeUnit.SECONDS.toNanos(1)) {
-                val current = dao.account(account.key)
-                settingsAllowed = current?.enabled == true && current.copy(status = "") == account.copy(status = "")
-                settingsAllowed = settingsAllowed && users.getUser(account.userId)?.accessToken == api.accessToken
-                checkedAt = now
-            }
-            settingsAllowed && endpoints.allowed(endpoint, account.wifiOnly)
-        }
     }
 
     private suspend fun register(
@@ -164,6 +197,8 @@ internal class SmartOfflineDownloadStore(
         remote: BaseItemDto?,
     ) {
         if (remote == null) return
+        // Only this caller's authoritative watch endpoint may set the cleanup confirmation.
+        dao.confirmedWatched(entry.key, remote.userData?.played == true)
         val clean = journal.withPlaybackLease {
             val local = localReference(entry, account)
             if (local == null) return@withPlaybackLease account.cleanup && remote.userData?.played == true
@@ -186,18 +221,32 @@ internal class SmartOfflineDownloadStore(
     suspend fun remove(entry: SmartOfflineManaged, deleteFile: Boolean, automatic: Boolean = false) {
         journal.withPlaybackLease {
             val account = dao.account(entry.account) ?: return@withPlaybackLease
+            if (entry.key != "${account.key}-${entry.item.id}") return@withPlaybackLease
             val local = localReference(entry, account)
             if (local != null && !ownsDownload(entry, account, local)) return@withPlaybackLease
-            if (!removable(account, local, automatic)) return@withPlaybackLease
-            val target = paths.file(entry)
+            if (!removable(account, entry, local, automatic)) return@withPlaybackLease
+            val target = paths.readFile(entry)
+            val hadFile = target.isFile
+            if (target.exists() && !hadFile) throw IOException("Managed download is not a regular file")
             if (deleteFile && target.exists() && !target.delete()) throw IOException("Cannot delete managed local file")
             local?.id?.let { downloads.delete(it) }
-            if (deleteFile) dao.forget(entry.key) else dao.save(entry.copy(downloadId = null))
+            if (deleteFile) {
+                if (hadFile) dao.removed(entry, automatic, System.currentTimeMillis()) else dao.forget(entry.key)
+            } else {
+                dao.save(
+                    entry.copy(
+                        downloadId = null,
+                        phase = SmartOfflineItemPhase.PARTIAL.name,
+                        reason = "Local file retained"
+                    )
+                )
+            }
         }
     }
 
     private suspend fun removable(
         account: SmartOfflineAccount,
+        entry: SmartOfflineManaged,
         local: DownloadEntity?,
         automatic: Boolean,
     ): Boolean {
@@ -205,6 +254,7 @@ internal class SmartOfflineDownloadStore(
         if (local != null && dao.progress(local.id) != null) return false
         if (!automatic) return true
         val latest = dao.account(account.key) ?: return false
-        return latest.enabled && latest.cleanup
+        val owned = dao.managed(account.key).firstOrNull { it.key == entry.key } ?: return false
+        return latest.enabled && latest.cleanup && owned.serverPlayed
     }
 }
