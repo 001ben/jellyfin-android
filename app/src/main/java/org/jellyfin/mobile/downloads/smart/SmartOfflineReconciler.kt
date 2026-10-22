@@ -4,6 +4,7 @@ import org.jellyfin.mobile.app.ApiClientController
 import org.jellyfin.mobile.data.dao.UserDao
 import org.jellyfin.mobile.data.entity.UserEntity
 import org.jellyfin.sdk.api.client.ApiClient
+import org.jellyfin.sdk.api.client.exception.ApiClientException
 import org.jellyfin.sdk.api.client.extensions.itemsApi
 import org.jellyfin.sdk.model.api.BaseItemDto
 import org.jellyfin.sdk.model.api.BaseItemKind
@@ -31,18 +32,43 @@ internal class SmartOfflineReconciler(
         val account = pinIdentity(saved, remote) ?: return
         val endpoint = endpoints.resolve(account, requireNotNull(remote.baseUrl))
         val api = scopedDownloadApi(remote, endpoint)
-        dao.status(
-            key,
-            if (endpoint.lan) "Using verified direct Wi-Fi endpoint" else "Using configured remote endpoint"
-        )
-        store.refreshWatched(account, api)
+        dao.status(key, endpointStatus(endpoint))
+        val watchConfirmed = refreshWatched(account, endpoint, remote, api)
         val waiting = replenish(account, user, endpoint, api)
         val message = if (waiting) {
             "Waiting for storage; unknown-size episodes are skipped"
         } else {
             "Up to date; ${dao.managed(key).count { it.downloadId != null }} managed episodes"
         }
-        dao.status(key, message)
+        val watchStatus = if (watchConfirmed) "" else "; watch synchronization pending"
+        dao.status(key, message + watchStatus)
+    }
+
+    private suspend fun refreshWatched(
+        account: SmartOfflineAccount,
+        endpoint: VerifiedDownloadEndpoint,
+        remote: ApiClient,
+        api: ApiClient,
+    ): Boolean {
+        if (!endpoint.trustedHttpLan) {
+            store.refreshWatched(account, api)
+            return true
+        }
+        // HTTP trust permits media transfer, never authoritative watch confirmation or insecure cleanup fallback.
+        return try {
+            store.refreshWatched(account, remote)
+            true
+        } catch (_: IOException) {
+            false
+        } catch (_: ApiClientException) {
+            false
+        }
+    }
+
+    private fun endpointStatus(endpoint: VerifiedDownloadEndpoint): String = when {
+        endpoint.trustedHttpLan -> "Using explicitly trusted HTTP over direct Wi-Fi"
+        endpoint.lan -> "Using verified direct Wi-Fi endpoint"
+        else -> "Using configured remote endpoint"
     }
 
     private suspend fun pinIdentity(account: SmartOfflineAccount, remote: ApiClient): SmartOfflineAccount? {

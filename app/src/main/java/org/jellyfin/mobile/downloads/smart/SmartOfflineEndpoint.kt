@@ -21,7 +21,10 @@ import java.net.Proxy
 import java.util.concurrent.TimeUnit
 import javax.net.SocketFactory
 
-data class VerifiedDownloadEndpoint(val url: HttpUrl, val client: OkHttpClient, val lan: Boolean)
+data class VerifiedDownloadEndpoint(val url: HttpUrl, val client: OkHttpClient, val lan: Boolean) {
+    /** Explicit local trust and an ID consistency check do not authenticate an HTTP peer cryptographically. */
+    val trustedHttpLan: Boolean get() = lan && url.scheme == "http"
+}
 
 data class DirectWifiRoute(val sockets: SocketFactory, val lookup: (String) -> List<InetAddress>)
 
@@ -118,8 +121,9 @@ class SmartOfflineEndpoint(private val network: DownloadNetwork, client: OkHttpC
 
     private fun verifiedLan(account: SmartOfflineAccount, wifi: DirectWifiRoute): VerifiedDownloadEndpoint? {
         val lan = SmartOfflinePolicy.lanUrl(account.lanUrl).toHttpUrl()
+        if (lan.scheme == "http" && !SmartOfflinePolicy.isTrustedHttpLan(account)) return null
         val addresses = wifi.lookup(lan.host)
-        require(addresses.isNotEmpty() && addresses.all(::isLanAddress))
+        require(addresses.isNotEmpty() && addresses.all { isPermittedAddress(lan, it) })
         val client = strictClient.newBuilder().proxy(Proxy.NO_PROXY).socketFactory(wifi.sockets)
             .dns(object : Dns {
                 override fun lookup(hostname: String): List<InetAddress> =
@@ -127,6 +131,12 @@ class SmartOfflineEndpoint(private val network: DownloadNetwork, client: OkHttpC
             }).build()
         val verified = SmartOfflinePolicy.sameServer(account.serverIdentity, publicIdentity(client, lan))
         return if (verified) VerifiedDownloadEndpoint(lan, client, true) else null
+    }
+
+    private fun isPermittedAddress(lan: HttpUrl, address: InetAddress): Boolean = if (lan.scheme == "http") {
+        SmartOfflinePolicy.isPrivateIpv4(address.hostAddress.orEmpty()) && address.hostAddress == lan.host
+    } else {
+        isLanAddress(address)
     }
 
     private fun isLanAddress(address: InetAddress): Boolean {

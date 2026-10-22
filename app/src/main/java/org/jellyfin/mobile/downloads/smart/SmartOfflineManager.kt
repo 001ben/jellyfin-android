@@ -1,7 +1,10 @@
 package org.jellyfin.mobile.downloads.smart
 
 import android.content.Context
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -12,14 +15,18 @@ import org.jellyfin.sdk.api.client.extensions.itemsApi
 import org.jellyfin.sdk.model.api.BaseItemDto
 import org.jellyfin.sdk.model.api.BaseItemKind
 
+data class SmartOfflinePersistence(val database: JellyfinDatabase, val dao: SmartOfflineDao)
+
 class SmartOfflineManager(
     private val context: Context,
-    database: JellyfinDatabase,
-    private val dao: SmartOfflineDao,
+    persistence: SmartOfflinePersistence,
     private val users: UserDao,
     private val controller: ApiClientController,
     endpoints: SmartOfflineEndpoint,
+    private val schedule: suspend (SmartOfflineAccount) -> Unit = { SmartOfflineWorker.scheduleAndAwait(context, it) },
 ) {
+    private val database = persistence.database
+    private val dao = persistence.dao
     private val mutex = Mutex()
     private val journal = OfflinePlaybackJournal(context, database.downloadDao, dao)
     private val store = SmartOfflineDownloadStore(context, database, dao, users, endpoints, journal)
@@ -31,12 +38,17 @@ class SmartOfflineManager(
         dao.account("$server-$user") ?: SmartOfflineAccount("$server-$user", server, user)
     }
 
-    suspend fun save(account: SmartOfflineAccount) = withContext(Dispatchers.IO) {
+    fun observeAccount(server: Long, user: Long): Flow<SmartOfflineAccount> = dao.observeAccount("$server-$user").map {
+        it ?: SmartOfflineAccount("$server-$user", server, user)
+    }
+
+    fun observeSeries(key: String): Flow<List<SmartOfflineSeries>> = dao.observeSeries(key)
+
+    suspend fun save(account: SmartOfflineAccount): SmartOfflineSaveResult = withContext(Dispatchers.IO) {
         require(account.nextCount in SmartOfflinePolicy.MIN_EPISODES..SmartOfflinePolicy.MAX_EPISODES)
         require(account.capGiB in SmartOfflinePolicy.MIN_CAP_GIB..SmartOfflinePolicy.MAX_CAP_GIB)
-        if (account.lanUrl.isNotBlank()) SmartOfflinePolicy.lanUrl(account.lanUrl)
-        dao.save(account.copy(serverIdentity = dao.account(account.key)?.serverIdentity.orEmpty()))
-        SmartOfflineWorker.schedule(context, account)
+        val saved = dao.saveSettings(validatedSettings(account))
+        scheduleSaved(saved, schedule)
     }
 
     suspend fun series(account: SmartOfflineAccount): List<SmartOfflineSeries> = dao.series(account.key)
@@ -53,14 +65,21 @@ class SmartOfflineManager(
         result.items
     }
 
-    suspend fun subscribe(account: SmartOfflineAccount, item: BaseItemDto, enabled: Boolean) {
+    suspend fun subscribe(
+        account: SmartOfflineAccount,
+        item: BaseItemDto,
+        enabled: Boolean,
+    ): SmartOfflineSaveResult = withContext(Dispatchers.IO) {
+        dao.insertAccountIfMissing(SmartOfflineAccount(account.key, account.serverId, account.userId))
         val key = "${account.key}-${item.id}"
         if (enabled) {
             dao.subscribe(SmartOfflineSeries(key, account.key, item.id.toString(), item.name.orEmpty()))
         } else {
             dao.unsubscribe(key)
         }
-        save(account)
+        // A series click carries identity only. Its stale UI snapshot must not overwrite settings or worker reports.
+        val current = requireNotNull(dao.account(account.key))
+        scheduleSaved(current, schedule)
     }
 
     suspend fun started(id: Long, session: String = ""): Boolean = journal.started(id, session)
@@ -89,4 +108,36 @@ class SmartOfflineManager(
     private companion object {
         const val SERIES_SEARCH_LIMIT = 50
     }
+}
+
+private fun validatedSettings(account: SmartOfflineAccount): SmartOfflineAccount {
+    if (account.lanUrl.isBlank()) return account.copy(lanUrl = "", trustedHttpLanUrl = "")
+    val canonical = SmartOfflinePolicy.lanUrl(account.lanUrl)
+    val trustedHttp = if (canonical.startsWith("http://")) {
+        require(
+            SmartOfflinePolicy.isTrustedHttpLan(account)
+        ) { "Confirm the exact HTTP home LAN endpoint before saving" }
+        canonical
+    } else {
+        ""
+    }
+    return account.copy(lanUrl = canonical, trustedHttpLanUrl = trustedHttp)
+}
+
+private suspend fun scheduleSaved(
+    account: SmartOfflineAccount,
+    schedule: suspend (SmartOfflineAccount) -> Unit,
+): SmartOfflineSaveResult = try {
+    schedule(account)
+    val feedback = if (account.enabled) {
+        SmartOfflineSaveFeedback.SAVED_AND_QUEUED
+    } else {
+        SmartOfflineSaveFeedback.SAVED_AND_DISABLED
+    }
+    SmartOfflineSaveResult(account, feedback)
+} catch (error: CancellationException) {
+    throw error
+} catch (_: Exception) {
+    // Configuration is already durable. A failed scheduler operation must not be presented as a failed save.
+    SmartOfflineSaveResult(account, SmartOfflineSaveFeedback.SAVED, schedulingFailed = true)
 }
