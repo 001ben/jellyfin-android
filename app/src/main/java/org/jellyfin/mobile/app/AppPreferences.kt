@@ -4,6 +4,9 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.view.WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
 import androidx.core.content.edit
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import org.jellyfin.mobile.downloads.DownloadMethod
 import org.jellyfin.mobile.player.mediasegments.MediaSegmentAction
 import org.jellyfin.mobile.player.mediasegments.toMediaSegmentActionsString
@@ -15,6 +18,17 @@ import org.jellyfin.sdk.model.api.MediaSegmentType
 class AppPreferences(context: Context) {
     private val sharedPreferences: SharedPreferences =
         context.getSharedPreferences("${context.packageName}_preferences", Context.MODE_PRIVATE)
+
+    val currentAccountChanges = callbackFlow {
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == Constants.PREF_SERVER_ID || key == Constants.PREF_USER_ID) {
+                trySend(currentServerId to currentUserId)
+            }
+        }
+        sharedPreferences.registerOnSharedPreferenceChangeListener(listener)
+        trySend(currentServerId to currentUserId)
+        awaitClose { sharedPreferences.unregisterOnSharedPreferenceChangeListener(listener) }
+    }.distinctUntilChanged()
 
     var currentServerId: Long?
         get() = sharedPreferences.getLong(Constants.PREF_SERVER_ID, -1).takeIf { it >= 0 }

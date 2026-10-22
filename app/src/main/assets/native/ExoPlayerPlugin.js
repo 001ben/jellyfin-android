@@ -54,7 +54,7 @@ export class ExoPlayerPlugin {
     }
 
     canPlayItem(item, playOptions) {
-        return this._nativePlayer.isEnabled() &&
+        return (this._nativePlayer.isEnabled() || window.SmartOfflinePlayback?.canPlay(item) === true) &&
             playOptions.fullscreen &&
             !this.playbackManager.syncPlayEnabled;
     }

@@ -20,6 +20,14 @@ import org.jellyfin.mobile.app.AppPreferences
 import org.jellyfin.sdk.model.api.BaseItemDto
 import org.koin.core.component.KoinComponent
 import org.koin.core.component.inject
+import java.util.UUID
+
+private data class ObservedSmartOfflineState(
+    val account: SmartOfflineAccount,
+    val series: List<SmartOfflineSeries>,
+    val work: SmartOfflineStatus,
+    val catalog: List<SmartOfflineCatalogItem>,
+)
 
 class SmartOfflineViewModel(
     uiSource: SmartOfflineUiSource? = null,
@@ -39,6 +47,14 @@ class SmartOfflineViewModel(
     private val _state = MutableStateFlow(SmartOfflineUiState())
     val state = _state.asStateFlow()
 
+    private fun currentIdentity(): Pair<Long?, Long?> =
+        accountProvider?.invoke() ?: (preferences.currentServerId to preferences.currentUserId)
+
+    private fun isCurrent(key: String): Boolean {
+        val (server, user) = currentIdentity()
+        return key == accountKey && key == "$server-$user"
+    }
+
     private fun run(action: SmartOfflineAction, task: suspend () -> Unit): Job = scope.launch {
         actionMutex.withLock {
             _state.update { it.copy(action = action, error = "", saveFeedback = null) }
@@ -54,16 +70,16 @@ class SmartOfflineViewModel(
         }
     }
 
-    /** Loading starts read-only subscriptions; it does not save, schedule, reconcile or contact a server. */
-    fun load() = run(SmartOfflineAction.LOAD) {
+    /** Generic loading only observes local state; explicit contextual entry also fetches that show's metadata. */
+    fun load(initialSeriesId: UUID? = null) = run(SmartOfflineAction.LOAD) {
         observation?.cancel()
         search?.cancel()
         searchRevision++
-        val (server, user) = accountProvider?.invoke() ?: (preferences.currentServerId to preferences.currentUserId)
+        val (server, user) = currentIdentity()
         val key = if (server != null && user != null) "$server-$user" else null
         if (key != accountKey) _state.update { SmartOfflineUiState(action = SmartOfflineAction.LOAD) }
         accountKey = key
-        _state.update { it.copy(results = emptyList()) }
+        _state.update { it.copy(results = emptyList(), contextualSeries = null, artwork = emptyMap()) }
         if (server == null || user == null) {
             _state.update {
                 it.copy(
@@ -79,9 +95,10 @@ class SmartOfflineViewModel(
             combine(
                 source.observeAccount(server, user),
                 source.observeSeries(key!!),
-                source.observeWork(key)
-            ) { account, series, work ->
-                Triple(account, series, work.copy(lastReport = account.status))
+                source.observeWork(key),
+                source.observeCatalog(server, user),
+            ) { account, series, work, catalog ->
+                ObservedSmartOfflineState(account, series, work.copy(lastReport = account.status), catalog)
             }
         publish(saved.first())
         observation = scope.launch {
@@ -93,21 +110,52 @@ class SmartOfflineViewModel(
                 _state.update { it.copy(error = "Unable to observe background status. Reopen Smart offline to retry.") }
             }
         }
+        if (initialSeriesId != null) loadContext(initialSeriesId)
     }
 
-    private fun publish(value: Triple<SmartOfflineAccount, List<SmartOfflineSeries>, SmartOfflineStatus>) {
-        if (value.first.key != accountKey) return
-        _state.update { it.copy(account = value.first, series = value.second, status = value.third) }
+    private suspend fun publish(value: ObservedSmartOfflineState) {
+        if (!isCurrent(value.account.key)) return
+        _state.update {
+            it.copy(account = value.account, series = value.series, status = value.work, catalog = value.catalog)
+        }
+        captureArtwork(value.account, value.series.mapNotNull { it.item }, allowNetwork = false)
+    }
+
+    private suspend fun loadContext(id: UUID) {
+        val account = _state.value.account?.takeIf { isCurrent(it.key) } ?: return
+        val item = withContext(Dispatchers.IO) { source.findSeries(account, id) }
+        if (!isCurrent(account.key)) return
+        _state.update {
+            it.copy(
+                contextualSeries = item,
+                error = if (item == null) "This show is unavailable for this account." else ""
+            )
+        }
+        if (item != null) captureArtwork(account, listOf(item), allowNetwork = true)
+    }
+
+    private suspend fun captureArtwork(account: SmartOfflineAccount, items: List<BaseItemDto>, allowNetwork: Boolean) {
+        if (!isCurrent(account.key)) return
+        val captured = withContext(Dispatchers.IO) { source.artwork(account, items, allowNetwork) }
+        if (!isCurrent(account.key)) return
+        _state.update { current ->
+            val artwork = captured.mapValues { (id, image) ->
+                current.artwork[id]?.takeIf {
+                    it.cacheKey == image.cacheKey && (it.allowNetwork || !image.allowNetwork)
+                } ?: image
+            }
+            current.copy(artwork = current.artwork + artwork)
+        }
     }
 
     fun save(account: SmartOfflineAccount) = run(SmartOfflineAction.SAVE) {
-        if (account.key != accountKey) return@run
+        if (!isCurrent(account.key)) return@run
         val saved = withContext(Dispatchers.IO) { source.save(account) }
         feedback(saved)
     }
 
     private fun feedback(saved: SmartOfflineSaveResult) {
-        if (saved.account.key != accountKey) return
+        if (!isCurrent(saved.account.key)) return
         _state.update {
             it.copy(
                 saveFeedback = saved.feedback,
@@ -123,19 +171,34 @@ class SmartOfflineViewModel(
     fun search(query: String) {
         search?.cancel()
         val revision = ++searchRevision
-        val account = _state.value.account ?: return
+        val account = _state.value.account?.takeIf { isCurrent(it.key) } ?: return
         search = run(SmartOfflineAction.SEARCH) {
+            if (!isCurrent(account.key)) return@run
             val results = withContext(Dispatchers.IO) { source.search(account, query) }
-            if (revision == searchRevision && account.key == accountKey) _state.update { it.copy(results = results) }
+            if (revision == searchRevision && isCurrent(account.key)) {
+                _state.update { it.copy(results = results) }
+                captureArtwork(account, results, allowNetwork = true)
+            }
         }
     }
 
     fun toggle(item: BaseItemDto, enabled: Boolean): Job {
         val clickedAccount = _state.value.account
         return run(SmartOfflineAction.TOGGLE) {
-            val account = clickedAccount?.takeIf { it.key == accountKey } ?: return@run
+            val account = clickedAccount?.takeIf { isCurrent(it.key) } ?: return@run
             val saved = withContext(Dispatchers.IO) { source.toggle(account, item, enabled) }
-            feedback(saved)
+            if (isCurrent(saved.account.key)) {
+                _state.update {
+                    it.copy(
+                        seriesFeedback = SmartOfflineSeriesFeedback(item, enabled),
+                        error = if (saved.schedulingFailed) {
+                            "Selection saved, but the check could not be queued."
+                        } else {
+                            ""
+                        },
+                    )
+                }
+            }
         }
     }
 

@@ -2,6 +2,7 @@ package org.jellyfin.mobile.downloads.smart
 
 import android.content.Context
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.runBlocking
@@ -64,5 +65,18 @@ class OfflinePlaybackJournalTest {
         val journal = setup()
         entry = entry.copy(account = "1-99")
         assertFalse(journal.started(9, "wrong-account"))
+    }
+
+    @Test fun `abandon releases only matching lease without recording playback or scheduling sync`() = runBlocking {
+        val journal = setup()
+        assertTrue(journal.started(9, "old"))
+        assertTrue(journal.started(9, "new"))
+        journal.abandon(9, "old")
+        assertTrue(journal.isPlaying(9))
+        assertEquals(setOf(9L), journal.activeDownloads.value)
+        journal.abandon(9, "new")
+        assertFalse(journal.isPlaying(9))
+        assertTrue(journal.activeDownloads.value.isEmpty())
+        coVerify(exactly = 0) { dao.save(any<OfflineProgress>()) }
     }
 }

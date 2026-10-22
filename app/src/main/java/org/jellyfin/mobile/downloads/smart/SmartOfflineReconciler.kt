@@ -23,6 +23,8 @@ internal class SmartOfflineReconciler(
 ) {
     suspend fun reconcile(key: String) {
         val saved = dao.account(key)?.takeIf { it.enabled } ?: return
+        // A failed refresh must not leave an earlier confirmation displayed as current cleanup eligibility.
+        dao.invalidateWatchConfirmation(key)
         val user = users.getUser(saved.userId) ?: return
         if (user.serverId != saved.serverId || user.accessToken == null) {
             dao.status(key, "Sign in to resume smart downloads")
@@ -85,15 +87,18 @@ internal class SmartOfflineReconciler(
         api: ApiClient,
     ): Boolean {
         var waiting = false
+        val planned = mutableListOf<BaseItemDto>()
         for (series in dao.series(account.key)) {
             val episodes = episodes(api, user, series)
             val finished = dao.pending().filter {
                 it.finished && it.serverId == account.serverId && it.userId == account.userId
             }.map { it.itemId }.toSet()
-            for (item in SmartOfflinePolicy.nextEpisodes(episodes, account.nextCount, finished)) {
-                if (!store.download(account, endpoint, api, item)) waiting = true
+            planned += SmartOfflinePolicy.nextEpisodes(episodes, account.nextCount, finished).map {
+                it.copy(seriesId = UUID.fromString(series.seriesId))
             }
         }
+        store.plan(account, planned)
+        for (item in planned) if (!store.download(account, endpoint, api, item)) waiting = true
         return waiting
     }
 

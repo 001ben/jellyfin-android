@@ -32,16 +32,28 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.viewmodel.compose.viewModel
 import org.jellyfin.mobile.R
+import org.jellyfin.mobile.app.AppPreferences
 import org.jellyfin.mobile.downloads.smart.SmartOfflineAccount
 import org.jellyfin.mobile.downloads.smart.SmartOfflineAction
 import org.jellyfin.mobile.downloads.smart.SmartOfflineUiState
 import org.jellyfin.mobile.downloads.smart.SmartOfflineViewModel
 import org.jellyfin.sdk.model.api.BaseItemDto
+import org.koin.compose.koinInject
+import java.util.UUID
 
 @Composable
-fun SmartOfflineActions(visible: Boolean, content: @Composable () -> Unit) {
-    var show by remember { mutableStateOf(false) }
-    if (show) SmartOfflineDialog(onDismiss = { show = false })
+fun SmartOfflineActions(visible: Boolean, initialSeriesId: UUID? = null, content: @Composable () -> Unit) {
+    var show by remember(initialSeriesId) { mutableStateOf(initialSeriesId != null) }
+    var pendingSeriesId by remember(initialSeriesId) { mutableStateOf(initialSeriesId) }
+    if (show) {
+        SmartOfflineDialog(
+            onDismiss = {
+                show = false
+                pendingSeriesId = null
+            },
+            initialSeriesId = pendingSeriesId,
+        )
+    }
     Row {
         if (visible) TextButton(onClick = { show = true }) { Text(stringResource(R.string.smart_offline_title)) }
         content()
@@ -49,10 +61,26 @@ fun SmartOfflineActions(visible: Boolean, content: @Composable () -> Unit) {
 }
 
 @Composable
-fun SmartOfflineDialog(onDismiss: () -> Unit, model: SmartOfflineViewModel = viewModel()) {
+fun SmartOfflineDialog(
+    onDismiss: () -> Unit,
+    initialSeriesId: UUID? = null,
+    model: SmartOfflineViewModel = viewModel(),
+) {
     val state by model.state.collectAsState()
-    LaunchedEffect(Unit) { model.load() }
-    SmartOfflineEditor(state, SmartOfflineCallbacks(model::save, model::search, model::toggle), onDismiss)
+    val preferences = koinInject<AppPreferences>()
+    val identity by preferences.currentAccountChanges.collectAsState(
+        initial = preferences.currentServerId to preferences.currentUserId
+    )
+    val contextIdentity = remember(initialSeriesId) { identity }
+    LaunchedEffect(identity, initialSeriesId) {
+        model.load(initialSeriesId.takeIf { identity == contextIdentity })
+    }
+    val visibleState = if (state.account == null || state.account?.let { it.serverId to it.userId } == identity) {
+        state
+    } else {
+        SmartOfflineUiState(action = SmartOfflineAction.LOAD)
+    }
+    SmartOfflineEditor(visibleState, SmartOfflineCallbacks(model::save, model::search, model::toggle), onDismiss)
 }
 
 internal data class SmartOfflineCallbacks(
@@ -140,6 +168,7 @@ private fun SmartOfflineBody(
         if (draft != null) {
             item { SmartOfflineNetworkOptions(draft, !state.busy) }
             item { SmartOfflineSeriesChooser(state, callbacks) }
+            item { SmartOfflineCatalogSection(state.catalog) }
         }
     }
 }

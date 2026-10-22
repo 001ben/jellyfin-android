@@ -24,6 +24,8 @@ data class PlayOptions(
     val audioStreamIndex: Int?,
     val subtitleStreamIndex: Int?,
     val playFromDownloads: Boolean?,
+    val accountServerId: Long? = null,
+    val accountUserId: Long? = null,
 ) : Parcelable {
     companion object {
         fun fromJson(json: String): PlayOptions? = try {
@@ -32,7 +34,8 @@ data class PlayOptions(
                 ids = jsonObject["ids"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull?.toUUIDOrNull() } ?: emptyList(),
                 mediaSourceId = jsonObject["mediaSourceId"]?.jsonPrimitive?.contentOrNull,
                 startIndex = jsonObject["startIndex"]?.jsonPrimitive?.intOrNull ?: 0,
-                startPosition = (jsonObject["startPositionTicks"]?.jsonPrimitive?.longOrNull?.takeIf { it > 0 })?.ticks,
+                startPosition = jsonObject["startPositionTicks"]?.jsonPrimitive?.longOrNull
+                    ?.takeIf { it >= 0 }?.ticks,
                 audioStreamIndex = jsonObject["audioStreamIndex"]?.jsonPrimitive?.contentOrNull?.toIntOrNull(),
                 subtitleStreamIndex = jsonObject["subtitleStreamIndex"]?.jsonPrimitive?.contentOrNull?.toIntOrNull(),
                 playFromDownloads = false,

@@ -20,7 +20,8 @@ const plugins = [
     'NavigationPlugin',
     'ExoPlayerPlugin',
     'ExternalPlayerPlugin',
-    'MediaSegmentsPlugin'
+    'MediaSegmentsPlugin',
+    'SmartOfflinePlugin'
 ];
 
 // Add plugin loaders

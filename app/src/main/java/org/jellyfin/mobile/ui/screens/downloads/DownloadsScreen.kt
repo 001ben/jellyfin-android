@@ -53,11 +53,13 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import org.jellyfin.mobile.R
 import org.jellyfin.mobile.downloads.DownloadsViewModel
+import java.util.UUID
 
 @Composable
 fun DownloadsScreen(
     viewModel: DownloadsViewModel = viewModel(),
     onBackPressed: () -> Unit = {},
+    initialSeriesId: UUID? = null,
 ) {
     val downloads by viewModel.downloads.collectAsState()
     val storageLocation by viewModel.storageLocation.collectAsState()
@@ -149,7 +151,7 @@ fun DownloadsScreen(
                     }
                 },
                 actions = {
-                    SmartOfflineActions(visible = !selectionMode) {
+                    SmartOfflineActions(visible = !selectionMode, initialSeriesId = initialSeriesId) {
                         AnimatedVisibility(
                             visible = selectionMode,
                             enter = fadeIn(),

@@ -24,11 +24,15 @@ import io.github.peerless2012.ass.media.AssHandler
 import io.github.peerless2012.ass.media.kt.withAssMkvSupport
 import io.github.peerless2012.ass.media.parser.AssSubtitleParserFactory
 import io.github.peerless2012.ass.media.type.AssRenderType
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.Channel
 import okhttp3.OkHttpClient
 import org.jellyfin.mobile.MainViewModel
 import org.jellyfin.mobile.bridge.MediaSegments
 import org.jellyfin.mobile.bridge.NativePlayer
+import org.jellyfin.mobile.bridge.SmartOfflineWebBridge
+import org.jellyfin.mobile.bridge.SmartOfflineWebSession
+import org.jellyfin.mobile.data.entity.ServerEntity
 import org.jellyfin.mobile.downloads.DownloadManager
 import org.jellyfin.mobile.downloads.DownloadNotificationManager
 import org.jellyfin.mobile.downloads.DownloadQueue
@@ -42,6 +46,7 @@ import org.jellyfin.mobile.player.deviceprofile.DeviceProfileBuilder
 import org.jellyfin.mobile.player.interaction.PlayerEvent
 import org.jellyfin.mobile.player.mediasegments.MediaSegmentRepository
 import org.jellyfin.mobile.player.qualityoptions.QualityOptionsProvider
+import org.jellyfin.mobile.player.source.LocalPlaybackResolver
 import org.jellyfin.mobile.player.source.MediaSourceResolver
 import org.jellyfin.mobile.player.ui.PlayerFragment
 import org.jellyfin.mobile.setup.ConnectionHelper
@@ -78,12 +83,15 @@ val applicationModule = module {
     single { ApiClientController(get(), get(), get(), get(), get()) }
 
     // Event handlers and channels
-    single { ActivityEventHandler(get()) }
+    single { ActivityEventHandler(get(), get()) }
     single { WebappFunctionChannel() }
 
     // Bridge interfaces
     single { NativePlayer(get(), get(), get(named(PLAYER_EVENT_CHANNEL))) }
     single { MediaSegments(get()) }
+    factory { (server: ServerEntity, scope: CoroutineScope) ->
+        SmartOfflineWebBridge(server, scope, SmartOfflineWebSession(get(), get(), server), get(), get(), get())
+    }
 
     // ViewModels
     viewModel { MainViewModel(get(), get()) }
@@ -98,6 +106,7 @@ val applicationModule = module {
 
     // Media player helpers
     single { MediaSourceResolver(get()) }
+    single { LocalPlaybackResolver(get(), get(), get()) }
     single { DeviceProfileBuilder(get()) }
     single { QualityOptionsProvider() }
     single { MediaSegmentRepository() }
