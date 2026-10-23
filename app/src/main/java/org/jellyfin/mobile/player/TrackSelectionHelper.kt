@@ -2,10 +2,7 @@ package org.jellyfin.mobile.player
 
 import androidx.media3.common.C
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
-import org.jellyfin.mobile.player.source.ExternalSubtitleStream
 import org.jellyfin.mobile.player.source.JellyfinMediaSource
-import org.jellyfin.mobile.player.source.LocalJellyfinMediaSource
-import org.jellyfin.mobile.utils.clearSelectionAndDisableRendererByType
 import org.jellyfin.mobile.utils.selectTrackByTypeAndGroup
 import org.jellyfin.sdk.model.api.MediaStream
 import org.jellyfin.sdk.model.api.MediaStreamType
@@ -25,7 +22,7 @@ class TrackSelectionHelper(
         mediaSource.selectedAudioStream?.let { stream ->
             selectPlayerAudioTrack(mediaSource, stream, initial = true)
         }
-        selectSubtitleTrack(mediaSource, mediaSource.selectedSubtitleStream, initial = true)
+        selectSubtitleTrack(mediaSource, mediaSource.selectedSubtitleStream)
     }
 
     /**
@@ -108,78 +105,13 @@ class TrackSelectionHelper(
             return viewModel.queueManager.selectSubtitleStreamAndRestartPlayback(selectedMediaStream)
         }
 
-        return selectSubtitleTrack(mediaSource, selectedMediaStream, initial = false).also { success ->
+        return selectSubtitleTrack(mediaSource, selectedMediaStream).also { success ->
             if (success) viewModel.logTracks()
         }
     }
 
-    /**
-     * Select the subtitle track in the player.
-     *
-     * @param initial whether this is an initial selection and checks for re-selection should be skipped.
-     * @see selectSubtitleTrack
-     */
-    @Suppress("ReturnCount")
-    private fun selectSubtitleTrack(
-        mediaSource: JellyfinMediaSource,
-        subtitleStream: MediaStream?,
-        initial: Boolean,
-    ): Boolean {
-        when {
-            // Fast-pass: Skip execution on subsequent calls with the same selection
-            !initial && subtitleStream === mediaSource.selectedSubtitleStream -> return true
-            // Apply selection in media source, abort on failure
-            !mediaSource.selectSubtitleStream(subtitleStream) -> return false
-        }
-
-        // Apply selection in player
-        if (subtitleStream == null) {
-            // If no subtitle is selected, simply clear the selection and disable the subtitle renderer
-            trackSelector.clearSelectionAndDisableRendererByType(C.TRACK_TYPE_TEXT)
-            return true
-        }
-
-        val player = viewModel.playerOrNull ?: return false
-        val deliveryMethod = when (mediaSource) {
-            is LocalJellyfinMediaSource -> when {
-                subtitleStream.isExternal -> SubtitleDeliveryMethod.EXTERNAL
-                else -> SubtitleDeliveryMethod.EMBED
-            }
-
-            else -> subtitleStream.deliveryMethod
-        }
-        when (deliveryMethod) {
-            SubtitleDeliveryMethod.ENCODE -> {
-                // Normally handled in selectSubtitleTrack(int) by restarting playback,
-                // initial selection is always considered successful
-                return true
-            }
-
-            SubtitleDeliveryMethod.EMBED -> {
-                // For embedded subtitles, we can match by the index of this stream in all embedded streams.
-                val embeddedStreamIndex = mediaSource.getEmbeddedStreamIndex(subtitleStream)
-                val subtitleGroup = player.currentTracks.groups.getOrNull(embeddedStreamIndex) ?: return false
-
-                return trackSelector.selectTrackByTypeAndGroup(C.TRACK_TYPE_TEXT, subtitleGroup.mediaTrackGroup)
-            }
-
-            SubtitleDeliveryMethod.EXTERNAL -> {
-                // For external subtitles, we can simply match the ID that we set when creating the player media source.
-                for (group in player.currentTracks.groups) {
-                    val formatId = group.getTrackFormat(0).id ?: continue
-                    val originalFormatPrefixIndex = formatId.indexOf(ExternalSubtitleStream.ID_PREFIX)
-                    if (originalFormatPrefixIndex < 0) continue
-                    val originalFormatId = formatId.substring(originalFormatPrefixIndex)
-                    if (originalFormatId == "${ExternalSubtitleStream.ID_PREFIX}${subtitleStream.index}") {
-                        return trackSelector.selectTrackByTypeAndGroup(C.TRACK_TYPE_TEXT, group.mediaTrackGroup)
-                    }
-                }
-                return false
-            }
-
-            else -> return false
-        }
-    }
+    private fun selectSubtitleTrack(mediaSource: JellyfinMediaSource, subtitleStream: MediaStream?): Boolean =
+        applySubtitleTrackSelection(mediaSource, subtitleStream, viewModel.playerOrNull, trackSelector)
 
     /**
      * Toggle subtitles, selecting the first by [MediaStream.index] if there are multiple.

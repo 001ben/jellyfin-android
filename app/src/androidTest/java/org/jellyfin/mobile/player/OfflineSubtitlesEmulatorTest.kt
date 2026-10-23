@@ -210,7 +210,7 @@ class OfflineSubtitlesEmulatorTest {
     }
 }
 
-private suspend fun LocalPlaybackEmulatorFixture.configureSubtitles(): BaseItemDto {
+internal suspend fun LocalPlaybackEmulatorFixture.configureSubtitles(): BaseItemDto {
     val user = requireNotNull(database.userDao.getUser(row.userId))
     database.userDao.update(user.id, "fixture-token")
     val stream = Json.decodeFromString<MediaStream>(
@@ -230,10 +230,10 @@ private suspend fun LocalPlaybackEmulatorFixture.configureSubtitles(): BaseItemD
     return item
 }
 
-private fun LocalPlaybackEmulatorFixture.account(): SmartOfflineAccount =
+internal fun LocalPlaybackEmulatorFixture.account(): SmartOfflineAccount =
     SmartOfflineAccount(owned.account, row.serverId, row.userId, enabled = true, capGiB = 1, wifiOnly = false)
 
-private fun LocalPlaybackEmulatorFixture.store(): SmartOfflineDownloadStore {
+internal fun LocalPlaybackEmulatorFixture.store(): SmartOfflineDownloadStore {
     val network = object : DownloadNetwork {
         override fun wifi(): DirectWifiRoute? = null
         override fun remoteAllowed(wifiOnly: Boolean): Boolean = true
@@ -248,7 +248,7 @@ private fun LocalPlaybackEmulatorFixture.store(): SmartOfflineDownloadStore {
     )
 }
 
-private class SubtitleLoopback : AutoCloseable {
+internal class SubtitleLoopback : AutoCloseable {
     private val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
     val requests = CopyOnWriteArrayList<String>()
 

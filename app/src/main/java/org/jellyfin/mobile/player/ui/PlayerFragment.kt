@@ -326,6 +326,8 @@ class PlayerFragment : Fragment(), BackPressInterceptor {
     fun onSubtitleSelected(index: Int, callback: TrackSelectionCallback): Job = lifecycleScope.launch {
         if (viewModel.trackSelectionHelper.selectSubtitleTrack(index)) {
             callback.onTrackSelected(true)
+        } else {
+            requireContext().toast(R.string.player_subtitle_not_ready)
         }
     }
 
