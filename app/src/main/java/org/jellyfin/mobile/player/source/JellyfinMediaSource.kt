@@ -21,6 +21,7 @@ sealed class JellyfinMediaSource(
     val sourceInfo: MediaSourceInfo,
     val playSessionId: String,
     playbackDetails: PlaybackDetails?,
+    availableSubtitleStreams: Set<Int>? = null,
 ) {
     val id: String = requireNotNull(sourceInfo.id) { "Media source has no id" }
 
@@ -63,13 +64,16 @@ sealed class JellyfinMediaSource(
                 }
                 MediaStreamType.AUDIO -> {
                     audio += mediaStream
-                    if (mediaStream.index == (playbackDetails?.audioStreamIndex ?: sourceInfo.defaultAudioStreamIndex)) {
+                    val selected = playbackDetails?.audioStreamIndex ?: sourceInfo.defaultAudioStreamIndex
+                    if (mediaStream.index == selected) {
                         selectedAudioStream = mediaStream
                     }
                 }
                 MediaStreamType.SUBTITLE -> {
+                    if (availableSubtitleStreams != null && mediaStream.index !in availableSubtitleStreams) continue
                     subtitles += mediaStream
-                    if (mediaStream.index == (playbackDetails?.subtitleStreamIndex ?: sourceInfo.defaultSubtitleStreamIndex)) {
+                    val selected = playbackDetails?.subtitleStreamIndex ?: sourceInfo.defaultSubtitleStreamIndex
+                    if (mediaStream.index == selected) {
                         selectedSubtitleStream = mediaStream
                     }
 
@@ -110,7 +114,7 @@ sealed class JellyfinMediaSource(
      */
     fun selectAudioStream(stream: MediaStream): Boolean {
         require(stream.type == MediaStreamType.AUDIO)
-        if (mediaStreams[stream.index] !== stream) {
+        if (audioStreams.none { it === stream }) {
             return false
         }
 
@@ -131,7 +135,7 @@ sealed class JellyfinMediaSource(
         }
 
         require(stream.type == MediaStreamType.SUBTITLE)
-        if (mediaStreams[stream.index] !== stream) {
+        if (subtitleStreams.none { it === stream }) {
             return false
         }
 
@@ -173,7 +177,8 @@ sealed class JellyfinMediaSource(
                 val extraInfo = when (it.type) {
                     BaseItemKind.TV_CHANNEL if !it.channelNumber.isNullOrEmpty() -> it.channelNumber
                     BaseItemKind.EPISODE if it.parentIndexNumber == 0 -> context.getString(R.string.special_episode)
-                    in arrayOf(BaseItemKind.EPISODE, BaseItemKind.RECORDING) if it.indexNumber != null && it.parentIndexNumber != null ->
+                    in arrayOf(BaseItemKind.EPISODE, BaseItemKind.RECORDING)
+                    if it.indexNumber != null && it.parentIndexNumber != null ->
                         "S${it.parentIndexNumber}:E${it.indexNumber}${it.indexNumberEnd?.let { n -> "-$n" } ?: ""}"
                     else -> ""
                 }

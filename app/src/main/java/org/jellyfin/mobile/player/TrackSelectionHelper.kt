@@ -36,7 +36,7 @@ class TrackSelectionHelper(
      */
     suspend fun selectAudioTrack(mediaStreamIndex: Int): Boolean {
         val mediaSource = mediaSourceOrNull ?: return false
-        val selectedMediaStream = mediaSource.mediaStreams[mediaStreamIndex]
+        val selectedMediaStream = mediaSource.audioStreams.firstOrNull { it.index == mediaStreamIndex } ?: return false
         require(selectedMediaStream.type == MediaStreamType.AUDIO)
 
         // For transcoding and external streams, we need to restart playback
@@ -68,7 +68,8 @@ class TrackSelectionHelper(
 
         when {
             // Fast-pass: Skip execution on subsequent calls with the correct selection or if only one track exists
-            mediaSource.audioStreams.size == 1 || !initial && audioStream === mediaSource.selectedAudioStream -> return true
+            mediaSource.audioStreams.size == 1 || !initial && audioStream === mediaSource.selectedAudioStream ->
+                return true
             // Apply selection in media source, abort on failure
             !mediaSource.selectAudioStream(audioStream) -> return false
         }
@@ -94,7 +95,8 @@ class TrackSelectionHelper(
      */
     suspend fun selectSubtitleTrack(mediaStreamIndex: Int): Boolean {
         val mediaSource = viewModel.mediaSourceOrNull ?: return false
-        val selectedMediaStream = mediaSource.mediaStreams.getOrNull(mediaStreamIndex)
+        val selectedMediaStream = mediaSource.subtitleStreams.firstOrNull { it.index == mediaStreamIndex }
+        if (mediaStreamIndex != -1 && selectedMediaStream == null) return false
         require(selectedMediaStream == null || selectedMediaStream.type == MediaStreamType.SUBTITLE)
 
         // If the selected subtitle stream requires encoding or the current subtitle is baked into the stream,

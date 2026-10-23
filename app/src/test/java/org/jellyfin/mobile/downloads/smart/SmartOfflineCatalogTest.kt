@@ -36,6 +36,16 @@ class SmartOfflineCatalogTest {
     private val files = SmartOfflineCatalogFiles(listOf(local), mapOf(entry.key to 3L), emptySet(), emptySet())
 
     @Test
+    fun `complete video shows subtitle retry status without losing its playback capability`() {
+        val status = "Video ready; offline subtitles incomplete and will retry"
+        val saved = entry.copy(phase = "COMPLETE", reason = status)
+        val shown = smartOfflineCatalog(records.copy(managed = listOf(saved)), files).single()
+        assertEquals(SmartOfflineItemPhase.COMPLETE, shown.phase)
+        assertEquals(9L, shown.downloadId)
+        assertEquals(status, shown.reason)
+    }
+
+    @Test
     fun `complete watched files become eligible only with every cleanup gate satisfied`() {
         val shown = smartOfflineCatalog(records, files).single()
         assertEquals(SmartOfflineItemPhase.COMPLETE, shown.phase)

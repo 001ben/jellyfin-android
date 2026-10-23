@@ -65,12 +65,17 @@ class LocalPlaybackResolver(
         val matchesSource = requestedSource == null || requestedSource == source.id ||
             requestedSource.toUUIDOrNull() == download.itemId // Legacy Downloads-screen options use the item id.
         if (!matchesSource) return null
-        val main = downloads.getFiles(download.id).firstOrNull {
+        val files = downloads.getFiles(download.id)
+        val main = files.firstOrNull {
             it.downloadId == download.id && it.type == DownloadFileType.ITEM &&
                 it.status == DownloadStatus.DOWNLOADED && it.size > 0
         } ?: return null
         if (!managedFileMatches(download, main) || !verifyFile(main)) return null
-        return LocalPlaybackCandidate(download, main, source)
+        return LocalPlaybackCandidate(
+            download,
+            main,
+            LocalSubtitleResolver(context, verifyFile).resolve(download, source, files)
+        )
     }
 
     private suspend fun managedFileMatches(download: DownloadEntity, file: DownloadFileEntity): Boolean {

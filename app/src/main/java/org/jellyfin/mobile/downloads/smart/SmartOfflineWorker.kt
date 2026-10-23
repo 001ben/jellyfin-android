@@ -63,6 +63,9 @@ class SmartOfflineWorker(context: Context, parameters: WorkerParameters) :
             Result.retry()
         } catch (error: CancellationException) {
             throw error
+        } catch (_: OfflineSubtitlesPending) {
+            dao.status(key, "Video ready; offline subtitles incomplete; will retry")
+            Result.retry()
         } catch (_: StorageBudgetExceeded) {
             dao.status(key, "Storage budget reached; free space or raise the cap")
             Result.success()

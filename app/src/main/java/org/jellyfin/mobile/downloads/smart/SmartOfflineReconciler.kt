@@ -98,7 +98,15 @@ internal class SmartOfflineReconciler(
             }
         }
         store.plan(account, planned)
-        for (item in planned) if (!store.download(account, endpoint, api, item)) waiting = true
+        var subtitlesPending = false
+        for (item in planned) {
+            try {
+                if (!store.download(account, endpoint, api, item)) waiting = true
+            } catch (_: OfflineSubtitlesPending) {
+                subtitlesPending = true // A missing subtitle must not starve the remaining video downloads.
+            }
+        }
+        if (subtitlesPending) throw OfflineSubtitlesPending()
         return waiting
     }
 

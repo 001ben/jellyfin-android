@@ -132,6 +132,7 @@ private fun catalogPhase(
 }
 
 private fun catalogReason(entry: SmartOfflineManaged, phase: SmartOfflineItemPhase, selected: Boolean): String = when {
+    phase == SmartOfflineItemPhase.COMPLETE && entry.phase == SmartOfflineItemPhase.COMPLETE.name -> entry.reason
     phase == SmartOfflineItemPhase.COMPLETE -> ""
     !selected -> "Series is no longer selected; local files are retained"
     entry.reason.isNotBlank() -> entry.reason
