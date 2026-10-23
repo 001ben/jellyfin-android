@@ -1,0 +1,15 @@
+# Home LAN downloads with a connected VPN
+
+Excluding the whole Jellyfin app from Tailscale makes the normal Tailscale server address unavailable to that app. The intended setup keeps Jellyfin included in Tailscale, retains its normal server address for browsing and watch synchronization, and configures the optional home endpoint separately for downloads.
+
+The previous LAN client always used `Network.socketFactory` for the physical Wi-Fi network. Android can reject explicit network binding for an app included in a VPN that does not permit bypass. That rejection does not establish that the operating system's ordinary route to a local address is unavailable: a split-route VPN may still leave LAN destinations reachable directly.
+
+The LAN client now prefers explicit Wi-Fi sockets and, if socket creation is denied, tries an ordinary socket using the operating system's existing routing policy. A network interceptor validates the connected source address against the current link addresses of the selected non-VPN, unmetered Wi-Fi network before any HTTP request headers are written. The same validation runs again for every request on pooled connections. A VPN or cellular source, Wi-Fi loss, or a disallowed route blocks the request. TLS negotiation may occur before this HTTP guard; TLS validation remains enabled and no Jellyfin credentials are sent until the guard passes. The credential-free identity check still precedes authenticated LAN requests.
+
+If network-specific DNS is denied, the existing system resolver may be used. Its entire result must still pass the LAN-address rules and is pinned for that pass. HTTP remains limited to the exact consented private address and port; redirects, TLS downgrades, public destinations and server-ID mismatches remain rejected. This changes no VPN, router, server or security settings, and adds no credentials or permissions. A VPN that captures or prohibits the LAN route can still prevent direct downloads; the feature respects that restriction.
+
+Only the LAN download client receives these socket and HTTP guards. The ordinary server client is unchanged. Remote downloads still require the existing explicit fallback setting and Wi-Fi policy. The completed check status now retains whether downloads used the home LAN or configured remote endpoint.
+
+Seven new JVM regressions exercise denied socket binding, successful TLS and consented HTTP LAN requests, rejection before the public identity request on a non-Wi-Fi source, Wi-Fi loss before credentials on a reused connection, server-ID/HTTP-consent gates, preservation of the ordinary remote client, and preference for an already permitted Wi-Fi socket. Existing endpoint, cleanup, transfer and subtitle tests remain in force.
+
+The unit fixture simulates a denied explicit bind and controlled connection source; it is not a Tailscale tunnel. Physical-device acceptance with Tailscale connected, Jellyfin included, and home Wi-Fi enabled remains required before claiming that both routes work on that phone. Installation of a changed custom APK requires user approval. Keep existing media and watched state intact during that acceptance check.

@@ -38,6 +38,7 @@ import java.net.InetAddress
 import java.nio.file.Path
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
+import javax.net.SocketFactory
 
 class SmartOfflineManagerTest {
     @TempDir lateinit var directory: Path
@@ -421,8 +422,15 @@ class SmartOfflineManagerTest {
 
     @Test fun `metadata uses verified LAN even when remote server route is unavailable`() = runBlocking {
         LocalHttpFixture(tls = true).use { server ->
+            val denied = mockk<SocketFactory>()
+            every { denied.createSocket() } throws IOException("Synthetic VPN binding denial")
+            var sourceChecks = 0
+            val sockets = WifiDownloadSockets(denied, RedirectToFixtureSockets(server.port)) {
+                sourceChecks++
+                it.isLoopbackAddress
+            }
             val network = FakeDownloadNetwork(
-                DirectWifiRoute(RedirectToFixtureSockets(server.port)) {
+                DirectWifiRoute(sockets) {
                     listOf(InetAddress.getByName("192.168.1.2"))
                 }
             )
@@ -450,6 +458,8 @@ class SmartOfflineManagerTest {
             assertNull(server.requests[0].authorization)
             assertTrue(server.requests[1].authorization!!.contains("test-token"))
             assertEquals("/jellyfin/Items", server.requests[1].path)
+            assertEquals(server.requests.size, sourceChecks)
+            coVerify { dao.status("1-2", match { it.endsWith("; downloads via home LAN") }) }
         }
     }
 }
