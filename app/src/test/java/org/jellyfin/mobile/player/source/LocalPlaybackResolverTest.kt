@@ -21,6 +21,7 @@ import org.jellyfin.sdk.model.api.BaseItemDto
 import org.jellyfin.sdk.model.api.BaseItemKind
 import org.jellyfin.sdk.model.api.MediaSourceInfo
 import org.jellyfin.sdk.model.api.MediaStream
+import org.jellyfin.sdk.model.api.SubtitleDeliveryMethod
 import org.jellyfin.sdk.model.api.UserItemDataDto
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -182,6 +183,72 @@ class ManagedLocalPlaybackResolverTest {
         fixture.files = listOf(fixture.main.copy(uri = fixture.uri("file", unrelated)))
         assertNull(fixture.resolve())
     }
+
+    @Test fun `owned subtitles become local VTT and missing external tracks stay unselectable`() = runBlocking {
+        val fixture = LocalPlaybackFixture(directory.toFile())
+        fixture.manage()
+        val english = fixtureMediaStream("Subtitle", 7).copy(
+            codec = "subrip",
+            isExternal = true,
+            language = "eng",
+            deliveryMethod = SubtitleDeliveryMethod.EXTERNAL,
+            deliveryUrl = "https://unverified.invalid/subtitles",
+        )
+        val missing = english.copy(index = 8, language = "zho")
+        val embedded = english.copy(index = 9, isExternal = false, language = "fra")
+        val source = fixtureMediaSource().copy(mediaStreams = listOf(english, missing, embedded))
+        fixture.rows = fixture.rows.map { it.copy(item = it.item.copy(mediaSources = listOf(source))) }
+        val name = "${requireNotNull(fixture.owned).key}-subtitle-7.vtt"
+        val target = File(fixture.target.parentFile, name).also { it.writeText("WEBVTT\n\n") }
+        val subtitle = fixture.main.copy(
+            type = DownloadFileType.SUBTITLE,
+            fileName = name,
+            uri = fixture.uri("file", target),
+            size = target.length(),
+        )
+        fixture.files = fixture.files + subtitle
+        val candidate = requireNotNull(fixture.resolve())
+        val playback = candidate.createSource(PlaybackDetails(null, null, 7), "subtitles")
+        assertEquals(listOf(7, 9), playback.subtitleStreams.map { it.index })
+        assertEquals(7, playback.selectedSubtitleStreamIndex)
+        assertEquals("webvtt", playback.selectedSubtitleStream?.codec)
+        assertTrue(playback.externalSubtitleStreams.single().deliveryUrl.startsWith("file:"))
+        assertFalse(playback.selectSubtitleStream(playback.mediaStreams.first { it.index == 8 }))
+        assertTrue(playback.selectSubtitleStream(playback.subtitleStreams.last()))
+    }
+
+    @Test fun `partial foreign and replaced subtitle records never authorize a local subtitle`() = runBlocking {
+        val fixture = LocalPlaybackFixture(directory.toFile())
+        fixture.manage()
+        val stream = fixtureMediaStream("Subtitle", 7).copy(codec = "subrip", isExternal = true)
+        fixture.rows = fixture.rows.map {
+            val source = fixtureMediaSource().copy(mediaStreams = listOf(stream))
+            it.copy(item = it.item.copy(mediaSources = listOf(source)))
+        }
+        val name = "${requireNotNull(fixture.owned).key}-subtitle-7.vtt"
+        val target = File(fixture.target.parentFile, name).also { it.writeText("WEBVTT\n\n") }
+        val subtitle = fixture.main.copy(
+            type = DownloadFileType.SUBTITLE,
+            fileName = name,
+            uri = fixture.uri("file", target),
+            size = target.length(),
+        )
+        val main = fixture.files.single()
+        val unrelated = File(directory.toFile(), "unrelated-subtitle").also { it.writeText("WEBVTT\n\n") }
+        for (invalid in listOf(
+            subtitle.copy(status = DownloadStatus.DOWNLOADING),
+            subtitle.copy(downloadId = 999),
+            subtitle.copy(size = subtitle.size + 1),
+            subtitle.copy(uri = fixture.uri("https", target)),
+            subtitle.copy(uri = fixture.uri("file", unrelated)),
+        )) {
+            fixture.files = listOf(main, invalid)
+            val playback = requireNotNull(fixture.resolve()).createSource(PlaybackDetails(null, null, null), "invalid")
+            assertTrue(playback.subtitleStreams.isEmpty())
+            assertTrue(playback.externalSubtitleStreams.isEmpty())
+        }
+        assertEquals("WEBVTT\n\n", unrelated.readText())
+    }
 }
 
 private class LocalPlaybackFixture(private val directory: File) {
@@ -221,6 +288,8 @@ private class LocalPlaybackFixture(private val directory: File) {
         every { getScheme() } returns scheme
         every { path } returns file.absolutePath
         every { authority } returns null
+        every { this@mockk.toString() } returns
+            if (scheme == "file") file.toURI().toString() else "$scheme://fixture/subtitle"
     }
 
     fun manage() {

@@ -38,6 +38,7 @@ internal class SmartOfflineDownloadStore(
     private val paths = SmartOfflinePaths(context)
     private val transfer = SmartOfflineTransfer()
     private val policy = SmartOfflineTransferPolicy(dao, users, endpoints)
+    private val subtitles = SmartOfflineSubtitles(paths, downloads, dao, policy, journal)
     private val transfers = MutableStateFlow<Set<String>>(emptySet())
     val activeTransfers = transfers.asStateFlow()
 
@@ -62,12 +63,15 @@ internal class SmartOfflineDownloadStore(
         val existing = existingDownload(account, item.id)
         if (existing != null && existing.path != "smart-offline/$key") return true
         val entry = entry(account, item)
-        if (complete(entry, existing)) return true
+        if (complete(entry, existing)) {
+            subtitles.download(SmartOfflineSubtitleRequest(account, endpoint, api, entry, requireNotNull(existing).id))
+            return true
+        }
         val budget = budget(account, entry, item) ?: return false
         val pending = prepareIdleTransfer(journal, entry, existing?.id)
         dao.lifecycle(entry.key, SmartOfflineItemPhase.DOWNLOADING.name)
         transfers.value += entry.key
-        try {
+        val id = try {
             transferAndPublish(account, endpoint, api, pending, budget)
         } catch (error: CancellationException) {
             dao.lifecycle(entry.key, SmartOfflineItemPhase.WAITING.name, "Transfer interrupted; waiting to resume")
@@ -87,6 +91,7 @@ internal class SmartOfflineDownloadStore(
         } finally {
             transfers.value -= entry.key
         }
+        subtitles.download(SmartOfflineSubtitleRequest(account, endpoint, api, pending, id))
         return true
     }
 
@@ -96,7 +101,7 @@ internal class SmartOfflineDownloadStore(
         api: ApiClient,
         pending: SmartOfflineManaged,
         budget: Long,
-    ) {
+    ): Long {
         val bytes = transfer.download(
             SmartOfflineTransferRequest(endpoint, api, pending, paths.file(pending), budget),
             permitted = policy.permitted(account, endpoint, api, pending.item),
@@ -106,6 +111,7 @@ internal class SmartOfflineDownloadStore(
         if (!policy.subscribed(account, pending.item)) throw IOException("Series deselected")
         val id = register(account, pending, pending.item, bytes)
         dao.published(pending.key, id, bytes)
+        return id
     }
 
     private fun existingDownload(account: SmartOfflineAccount, item: UUID): DownloadEntity? =
@@ -225,10 +231,7 @@ internal class SmartOfflineDownloadStore(
             val local = localReference(entry, account)
             if (local != null && !ownsDownload(entry, account, local)) return@withPlaybackLease
             if (!removable(account, entry, local, automatic)) return@withPlaybackLease
-            val target = paths.readFile(entry)
-            val hadFile = target.isFile
-            if (target.exists() && !hadFile) throw IOException("Managed download is not a regular file")
-            if (deleteFile && target.exists() && !target.delete()) throw IOException("Cannot delete managed local file")
+            val hadFile = paths.removeFiles(entry, deleteFile)
             local?.id?.let { downloads.delete(it) }
             if (deleteFile) {
                 if (hadFile) dao.removed(entry, automatic, System.currentTimeMillis()) else dao.forget(entry.key)

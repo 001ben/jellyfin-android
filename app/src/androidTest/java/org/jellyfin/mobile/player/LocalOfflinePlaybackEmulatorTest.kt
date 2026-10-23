@@ -239,7 +239,7 @@ class LocalOfflinePlaybackEmulatorTest {
     }
 }
 
-private class LocalPlaybackEmulatorFixture(
+internal class LocalPlaybackEmulatorFixture(
     val context: Context,
     val database: JellyfinDatabase,
     val smart: SmartOfflineDatabase,

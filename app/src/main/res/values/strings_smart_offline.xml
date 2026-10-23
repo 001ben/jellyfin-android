@@ -69,7 +69,7 @@
     <string name="smart_offline_selection_removed">%1$s deselected. Existing downloads are kept; watched files still follow automatic cleanup.</string>
     <string name="smart_offline_undo">Undo series choice</string>
     <string name="smart_offline_catalog_heading">4. Episode activity</string>
-    <string name="smart_offline_catalog_help">Local transfers and watch synchronization are shown separately. Eligible files are removed during a permitted check, after the server confirms watching.</string>
+    <string name="smart_offline_catalog_help">Local transfers and watch synchronization are shown separately. External text subtitles are saved for offline use; choose a language in the player subtitle menu. Older downloads get missing subtitle files during the next permitted check. Eligible files are removed after the server confirms watching.</string>
     <string name="smart_offline_catalog_empty">No managed episode activity yet.</string>
     <string name="smart_offline_catalog_deselected">Show deselected · no new episodes will be added.</string>
     <string name="smart_offline_transfer_bytes">%1$s / %2$s</string>

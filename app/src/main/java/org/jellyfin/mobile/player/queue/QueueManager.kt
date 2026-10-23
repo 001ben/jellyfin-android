@@ -1,6 +1,5 @@
 package org.jellyfin.mobile.player.queue
 
-import android.net.Uri
 import androidx.annotation.CheckResult
 import androidx.core.net.toUri
 import androidx.lifecycle.LiveData
@@ -26,6 +25,7 @@ import org.jellyfin.mobile.player.source.LocalPlaybackResolver
 import org.jellyfin.mobile.player.source.MediaSourceResolver
 import org.jellyfin.mobile.player.source.PlaybackDetails
 import org.jellyfin.mobile.player.source.RemoteJellyfinMediaSource
+import org.jellyfin.mobile.player.source.localMediaItem
 import org.jellyfin.sdk.api.client.ApiClient
 import org.jellyfin.sdk.api.client.extensions.videosApi
 import org.jellyfin.sdk.api.operations.VideosApi
@@ -300,7 +300,8 @@ class QueueManager(
      */
     @CheckResult
     private fun prepareStreams(source: LocalJellyfinMediaSource): MediaSource {
-        return createDownloadVideoMediaSource(source.id, source.remoteFileUri)
+        val factory: MediaSource.Factory = get()
+        return factory.createMediaSource(source.localMediaItem())
     }
 
     private fun prepareStreams(source: RemoteJellyfinMediaSource): MediaSource {
@@ -398,19 +399,6 @@ class QueueManager(
         }.toList()
     }
 
-    @CheckResult
-    private fun createDownloadVideoMediaSource(mediaSourceId: String, fileUri: Uri): MediaSource {
-        val factory: MediaSource.Factory = get()
-
-        val mediaItem = MediaItem.Builder()
-            .setMediaId(mediaSourceId)
-            .setUri(fileUri)
-            .setCustomCacheKey(fileUri.toString())
-            .build()
-
-        return factory.createMediaSource(mediaItem)
-    }
-
     /**
      * Switch to the specified [audio stream][stream] and restart playback, for example while transcoding.
      *
@@ -476,7 +464,8 @@ class QueueManager(
                 maxStreamingBitrate = mediaSource.maxStreamingBitrate,
                 startTime = currentPlayState.position,
                 audioStreamIndex = mediaSource.selectedAudioStreamIndex,
-                subtitleStreamIndex = stream?.index ?: -1, // -1 disables subtitles, null would select the default subtitle
+                // -1 disables subtitles, null would select the default subtitle.
+                subtitleStreamIndex = stream?.index ?: -1,
                 playWhenReady = currentPlayState.playWhenReady,
             ) == null
             null -> false
