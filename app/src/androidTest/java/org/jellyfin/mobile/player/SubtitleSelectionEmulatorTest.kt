@@ -12,14 +12,17 @@ import androidx.media3.common.C
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.text.CueGroup
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.ui.PlayerView
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -34,14 +37,16 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.koin.core.context.GlobalContext
 import java.io.File
 
 private const val ENGLISH_INDEX = 7
 private const val RESUME_MS = 1000L
 private const val TIMEOUT_MS = 15_000L
 private const val PNG_QUALITY = 100
+private const val CAPTION_DRAW_MS = 150L
 
-private enum class SelectionJourney { EARLY_RETRY, REPAIR_DISABLED }
+private enum class SelectionJourney { EARLY_RETRY, REPAIR_DISABLED, PRODUCTION_FACTORIES }
 
 /** Real Media3 and the production selection function; only synthetic local files, no phone or server media. */
 @RunWith(AndroidJUnit4::class)
@@ -54,6 +59,10 @@ class SubtitleSelectionEmulatorTest {
 
     @Test fun rememberedEnglishSelectionRepairsDisabledRendererAndDisplaysCaption() = runBlocking<Unit> {
         render(SelectionJourney.REPAIR_DISABLED)
+    }
+
+    @Test fun productionCachedSourceAndExtensionRenderersDisplayLocalEnglish() = runBlocking<Unit> {
+        render(SelectionJourney.PRODUCTION_FACTORIES)
     }
 
     private suspend fun render(journey: SelectionJourney) {
@@ -74,10 +83,18 @@ class SubtitleSelectionEmulatorTest {
             player = withContext(Dispatchers.Main) {
                 selector = DefaultTrackSelector(fixture.context)
                 selector.clearSelectionAndDisableRendererByType(C.TRACK_TYPE_TEXT)
-                ExoPlayer.Builder(fixture.context).setTrackSelector(selector).build().apply {
+                val factory = if (journey == SelectionJourney.PRODUCTION_FACTORIES) {
+                    GlobalContext.get().get<MediaSource.Factory>()
+                } else {
+                    DefaultMediaSourceFactory(fixture.context)
+                }
+                val renderers = DefaultRenderersFactory(fixture.context)
+                    .setEnableDecoderFallback(true)
+                    .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
+                ExoPlayer.Builder(fixture.context, renderers).setTrackSelector(selector).build().apply {
                     volume = 0f
                     addListener(selectionListener(ready, caption))
-                    setMediaSource(DefaultMediaSourceFactory(fixture.context).createMediaSource(source.localMediaItem()))
+                    setMediaSource(factory.createMediaSource(source.localMediaItem()))
                     if (journey == SelectionJourney.EARLY_RETRY) verifyEarlyFailure(source, this, selector)
                     prepare()
                     seekTo(RESUME_MS)
@@ -92,6 +109,9 @@ class SubtitleSelectionEmulatorTest {
                 requireNotNull(player).playWhenReady = true
             }
             withTimeout(TIMEOUT_MS) { caption.await() }
+            withContext(Dispatchers.Main) { requireNotNull(player).pause() }
+            // Cue delivery precedes AndroidView's next drawing frame; hold the cue while capturing visual evidence.
+            delay(CAPTION_DRAW_MS)
             screenshot(journey)
         } finally {
             withContext(Dispatchers.Main) { player?.release() }
@@ -104,7 +124,10 @@ class SubtitleSelectionEmulatorTest {
         assertNull(source.selectedSubtitleStream)
     }
 
-    private fun selectionListener(ready: CompletableDeferred<Unit>, caption: CompletableDeferred<Unit>): Player.Listener =
+    private fun selectionListener(
+        ready: CompletableDeferred<Unit>,
+        caption: CompletableDeferred<Unit>,
+    ): Player.Listener =
         object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
                 if (state == Player.STATE_READY) ready.complete(Unit)
