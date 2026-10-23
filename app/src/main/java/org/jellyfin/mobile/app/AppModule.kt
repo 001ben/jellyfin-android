@@ -52,8 +52,8 @@ import org.jellyfin.mobile.player.ui.PlayerFragment
 import org.jellyfin.mobile.setup.ConnectionHelper
 import org.jellyfin.mobile.utils.Constants
 import org.jellyfin.mobile.utils.PermissionRequestHelper
-import org.jellyfin.mobile.utils.extractId
 import org.jellyfin.mobile.utils.isLowRamDevice
+import org.jellyfin.mobile.utils.playbackCacheKey
 import org.jellyfin.mobile.webapp.RemoteVolumeProvider
 import org.jellyfin.mobile.webapp.WebViewFragment
 import org.jellyfin.mobile.webapp.WebappFunctionChannel
@@ -164,9 +164,7 @@ val applicationModule = module {
             .setUpstreamDataSourceFactory(get<DataSource.Factory>())
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
             .setCacheWriteDataSinkFactory(null)
-            .setCacheKeyFactory { spec ->
-                spec.key ?: spec.uri.extractId()
-            }
+            .setCacheKeyFactory(::playbackCacheKey)
     }
 
     factory<MediaSource.Factory> {
