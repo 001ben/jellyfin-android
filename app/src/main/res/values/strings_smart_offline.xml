@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="player_subtitle_not_ready">Subtitle track is not ready. Try selecting it again in a moment.</string>
     <string name="smart_offline_title">Smart offline</string>
     <string name="smart_offline_sign_in">Sign in to a server to configure smart downloads.</string>
     <string name="smart_offline_description">Keep the next unwatched episodes for your selected series. Specials are excluded. Downloads use app storage and appear here when complete.</string>

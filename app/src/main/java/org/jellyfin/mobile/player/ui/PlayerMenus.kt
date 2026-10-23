@@ -273,13 +273,10 @@ class PlayerMenus(
 
     private fun createSubtitlesMenu() = PopupMenu(context, subtitlesButton).apply {
         setOnMenuItemClickListener { clickedItem ->
-            // Immediately apply changes to the menu, necessary when direct playing
-            // When transcoding, the updated media source will cause the menu to be rebuilt
-            clickedItem.isChecked = true
-
             // The itemId is the MediaStream.index of the track
             val selectedSubtitleStreamIndex = clickedItem.itemId
             fragment.onSubtitleSelected(selectedSubtitleStreamIndex) {
+                clickedItem.isChecked = true
                 subtitlesEnabled = selectedSubtitleStreamIndex >= 0
                 updateSubtitlesButton()
             }
