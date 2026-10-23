@@ -85,13 +85,20 @@ class SmartOfflineScreenTest {
 
     @Test fun httpRequiresVisibleAddressSpecificConsent() {
         show()
+        val automation = InstrumentationRegistry.getInstrumentation().uiAutomation
+        val service = automation.serviceInfo
+        service.flags = service.flags or AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
+        automation.serviceInfo = service
+        val editorWindow = requireNotNull(automation.rootInActiveWindow).windowId
         compose.onNodeWithTag("smart-offline-lan").performScrollTo().performTextReplacement("http://192.168.4.10:8096")
         compose.onNodeWithText("Trust HTTP for this address").performScrollTo().performClick()
         compose.onNodeWithText("Trust this HTTP address?").assertIsDisplayed()
         screenshot("04-http-consent")
+        val confirmationWindow = requireNotNull(automation.rootInActiveWindow).windowId
         compose.onNodeWithText("Trust this address").performClick()
+        waitForEditorWindow(editorWindow, confirmationWindow)
         compose.onNodeWithTag("smart-offline-save").assertIsEnabled().performClick()
-        assertEquals("http://192.168.4.10:8096", saved?.trustedHttpLanUrl)
+        compose.runOnIdle { assertEquals("http://192.168.4.10:8096", saved?.trustedHttpLanUrl) }
         compose.onNodeWithTag("smart-offline-lan").performTextReplacement("http://192.168.4.11:8096")
         compose.onNodeWithTag("smart-offline-save").assertIsNotEnabled()
     }

@@ -43,7 +43,12 @@ internal class SmartOfflineReconciler(
             "Up to date; ${dao.managed(key).count { it.downloadId != null }} managed episodes"
         }
         val watchStatus = if (watchConfirmed) "" else "; watch synchronization pending"
-        dao.status(key, message + watchStatus)
+        val routeStatus = if (endpoint.lan) {
+            "; downloads via home LAN"
+        } else {
+            "; downloads via configured remote endpoint"
+        }
+        dao.status(key, message + routeStatus + watchStatus)
     }
 
     private suspend fun refreshWatched(

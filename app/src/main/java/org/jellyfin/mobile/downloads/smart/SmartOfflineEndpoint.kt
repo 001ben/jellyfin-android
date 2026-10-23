@@ -2,6 +2,7 @@ package org.jellyfin.mobile.downloads.smart
 
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
 import androidx.core.content.getSystemService
 import kotlinx.coroutines.Dispatchers
@@ -43,7 +44,27 @@ class AndroidDownloadNetwork(context: Context) : DownloadNetwork {
                 !it.hasTransport(NetworkCapabilities.TRANSPORT_VPN) &&
                 it.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
         } == true
-    }?.let { network -> DirectWifiRoute(network.socketFactory) { network.getAllByName(it).toList() } }
+    }?.let { network ->
+        val sockets = WifiDownloadSockets(network.socketFactory) { address -> wifiAddress(network, address) }
+        DirectWifiRoute(sockets) { hostname -> wifiLookup(network, hostname) }
+    }
+
+    private fun wifiAddress(network: Network, address: InetAddress): Boolean {
+        val caps = connectivity.getNetworkCapabilities(network) ?: return false
+        val stillWifi = caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) &&
+            !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) &&
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+        return stillWifi && connectivity.getLinkProperties(network)?.linkAddresses
+            ?.any { it.address == address } == true
+    }
+
+    private fun wifiLookup(network: Network, hostname: String): List<InetAddress> = try {
+        network.getAllByName(hostname).toList()
+    } catch (_: IOException) {
+        Dns.SYSTEM.lookup(hostname)
+    } catch (_: SecurityException) {
+        Dns.SYSTEM.lookup(hostname)
+    }
 
     override fun remoteAllowed(wifiOnly: Boolean): Boolean {
         val active = connectivity.activeNetwork ?: return false
@@ -125,6 +146,7 @@ class SmartOfflineEndpoint(private val network: DownloadNetwork, client: OkHttpC
         val addresses = wifi.lookup(lan.host)
         require(addresses.isNotEmpty() && addresses.all { isPermittedAddress(lan, it) })
         val client = strictClient.newBuilder().proxy(Proxy.NO_PROXY).socketFactory(wifi.sockets)
+            .apply { (wifi.sockets as? WifiDownloadSockets)?.let(::addNetworkInterceptor) }
             .dns(object : Dns {
                 override fun lookup(hostname: String): List<InetAddress> =
                     if (hostname == lan.host) addresses else throw IOException("Unexpected host")
