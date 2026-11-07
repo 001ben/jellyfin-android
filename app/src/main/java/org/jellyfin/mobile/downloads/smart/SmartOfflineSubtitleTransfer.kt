@@ -13,10 +13,15 @@ import java.io.InputStream
 
 internal const val MAX_OFFLINE_SUBTITLE_BYTES = 4L * 1024 * 1024
 private const val SUBTITLE_BUFFER_SIZE = 8 * 1024
-private const val SUBTITLE_PREFIX_BYTES = 16
+internal const val SUBTITLE_PREFIX_BYTES = 16
 private const val WEBVTT_SIGNATURE = "WEBVTT"
 
 internal class OfflineSubtitlesPending : IOException("Offline subtitles are incomplete")
+
+internal fun isWebVtt(prefix: String): Boolean {
+    val text = prefix.removePrefix("﻿")
+    return text.startsWith(WEBVTT_SIGNATURE) && text.getOrNull(WEBVTT_SIGNATURE.length)?.isWhitespace() == true
+}
 
 /** Always builds the URL on the verified media endpoint; server-supplied delivery URLs are never followed. */
 internal class SmartOfflineSubtitleTransfer {
@@ -112,10 +117,8 @@ internal class SmartOfflineSubtitleTransfer {
                 val count = input.read(bytes)
                 if (count < 0) "" else String(bytes, 0, count, Charsets.UTF_8)
             }
-        }.removePrefix("\uFEFF")
-        if (!prefix.startsWith(WEBVTT_SIGNATURE) || prefix.getOrNull(WEBVTT_SIGNATURE.length)?.isWhitespace() != true) {
-            throw IOException("Invalid subtitle format")
         }
+        if (!isWebVtt(prefix)) throw IOException("Invalid subtitle format")
     }
 
     private suspend fun checkPermitted(permitted: suspend () -> Boolean) {

@@ -217,6 +217,38 @@ class ManagedLocalPlaybackResolverTest {
         assertTrue(playback.selectSubtitleStream(playback.subtitleStreams.last()))
     }
 
+    @Test fun `manual downloads use their own complete subtitle files`() = runBlocking {
+        val fixture = LocalPlaybackFixture(directory.toFile())
+        val english = fixtureMediaStream("Subtitle", 7).copy(codec = "subrip", isExternal = true, language = "eng")
+        val missing = english.copy(index = 8, language = "zho")
+        val source = fixtureMediaSource().copy(mediaStreams = listOf(english, missing))
+        fixture.rows = fixture.rows.map { it.copy(item = it.item.copy(mediaSources = listOf(source))) }
+        val target = File(directory.toFile(), "subtitle-7.vtt").also { it.writeText("WEBVTT\n\n") }
+        val subtitle = fixture.main.copy(
+            type = DownloadFileType.SUBTITLE,
+            fileName = target.name,
+            uri = fixture.uri("file", target),
+            size = target.length(),
+        )
+        fixture.files = fixture.files + subtitle
+        val playback = requireNotNull(fixture.resolve()).createSource(PlaybackDetails(null, null, 7), "manual")
+        assertEquals(listOf(7), playback.subtitleStreams.map { it.index })
+        assertEquals("webvtt", playback.selectedSubtitleStream?.codec)
+        assertTrue(playback.externalSubtitleStreams.single().deliveryUrl.startsWith("file:"))
+
+        val main = fixture.main
+        for (invalid in listOf(
+            subtitle.copy(status = DownloadStatus.ERROR),
+            subtitle.copy(size = subtitle.size + 1),
+            subtitle.copy(fileName = "subtitle-9.vtt"),
+            subtitle.copy(uri = fixture.uri("https", target)),
+        )) {
+            fixture.files = listOf(main, invalid)
+            val skipped = requireNotNull(fixture.resolve()).createSource(PlaybackDetails(null, null, null), "invalid")
+            assertTrue(skipped.externalSubtitleStreams.isEmpty())
+        }
+    }
+
     @Test fun `partial foreign and replaced subtitle records never authorize a local subtitle`() = runBlocking {
         val fixture = LocalPlaybackFixture(directory.toFile())
         fixture.manage()

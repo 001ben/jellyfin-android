@@ -7,6 +7,7 @@ import org.jellyfin.mobile.data.entity.DownloadFileEntity
 import org.jellyfin.mobile.downloads.DownloadFileType
 import org.jellyfin.mobile.downloads.DownloadStatus
 import org.jellyfin.sdk.api.client.ApiClient
+import org.jellyfin.sdk.model.api.BaseItemDto
 import org.jellyfin.sdk.model.api.MediaStream
 import org.jellyfin.sdk.model.api.MediaStreamType
 import java.io.File
@@ -23,8 +24,8 @@ internal data class SmartOfflineSubtitleRequest(
     val downloadId: Long,
 )
 
-internal fun externalTextSubtitles(entry: SmartOfflineManaged): List<MediaStream> =
-    entry.item.mediaSources?.firstOrNull()?.mediaStreams.orEmpty().filter {
+internal fun externalTextSubtitles(item: BaseItemDto): List<MediaStream> =
+    item.mediaSources?.firstOrNull()?.mediaStreams.orEmpty().filter {
         it.type == MediaStreamType.SUBTITLE && it.isExternal && it.codec?.lowercase() in supportedTextCodecs &&
             it.index in 0..MAX_SUBTITLE_INDEX
     }.distinctBy { it.index }.take(MAX_EXTERNAL_SUBTITLES)
@@ -40,7 +41,7 @@ internal class SmartOfflineSubtitles(
     private val transfer = SmartOfflineSubtitleTransfer()
 
     suspend fun download(request: SmartOfflineSubtitleRequest) {
-        val tracks = externalTextSubtitles(request.entry)
+        val tracks = externalTextSubtitles(request.entry.item)
         val externalCount = request.entry.item.mediaSources?.firstOrNull()?.mediaStreams.orEmpty().count {
             it.type == MediaStreamType.SUBTITLE && it.isExternal
         }

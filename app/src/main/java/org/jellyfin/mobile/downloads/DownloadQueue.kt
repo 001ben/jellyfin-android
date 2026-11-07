@@ -11,12 +11,20 @@ import org.jellyfin.mobile.app.StorageManager
 import org.jellyfin.mobile.data.dao.DownloadDao
 import org.jellyfin.mobile.data.entity.DownloadFileEntity
 import org.jellyfin.mobile.data.entity.DownloadFiles
+import org.jellyfin.mobile.downloads.smart.MAX_SUBTITLE_INDEX
+import org.jellyfin.mobile.downloads.smart.externalTextSubtitles
 import org.jellyfin.sdk.api.client.ApiClient
 import org.jellyfin.sdk.api.client.extensions.imageApi
 import org.jellyfin.sdk.api.client.extensions.libraryApi
 import org.jellyfin.sdk.model.api.ImageFormat
 import org.jellyfin.sdk.model.api.ImageType
+import timber.log.Timber
 import java.io.IOException
+
+internal fun downloadedSubtitleName(index: Int): String {
+    require(index in 0..MAX_SUBTITLE_INDEX)
+    return "subtitle-$index.vtt"
+}
 
 class DownloadQueue(
     private val context: Context,
@@ -66,7 +74,11 @@ class DownloadQueue(
             )
 
             for (queuedFile in queuedFiles) {
-                download(api, queuedFile, notificationProgressCallback)
+                if (queuedFile.file.type == DownloadFileType.SUBTITLE) {
+                    downloadSubtitle(api, queuedFile)
+                } else {
+                    download(api, queuedFile, notificationProgressCallback)
+                }
             }
 
             notificationProgressCallback.onEnd()
@@ -129,6 +141,25 @@ class DownloadQueue(
         }
     }
 
+    /** Subtitles are optional, so a failure only skips that track; downloading the item again retries it. */
+    private suspend fun downloadSubtitle(api: ApiClient, queuedFile: QueuedFile) {
+        val (file, remoteUri) = queuedFile
+        downloadDao.updateFile(file.copy(status = DownloadStatus.DOWNLOADING))
+
+        try {
+            val fileDescriptor = context.contentResolver.openFileDescriptor(file.uri, "rwt")
+                ?: throw IOException("Unable to open file descriptor for ${file.fileName}")
+            val size = _downloader.downloadSubtitle(api, remoteUri, fileDescriptor)
+            downloadDao.updateFile(file.copy(size = size, status = DownloadStatus.DOWNLOADED))
+        } catch (e: IOException) {
+            Timber.w(e, "Failed to download subtitle %s", file.fileName)
+            downloadDao.updateFile(file.copy(status = DownloadStatus.ERROR))
+        } catch (e: CancellationException) {
+            downloadDao.updateFile(file.copy(status = DownloadStatus.QUEUED))
+            throw e
+        }
+    }
+
     private suspend fun prepareFiles(api: ApiClient, downloadWithFiles: DownloadFiles): List<QueuedFile> {
         val storageLocation = storageManager.getStorageLocation()
         val itemLocation = storageLocation?.findFile(downloadWithFiles.download.path)
@@ -141,6 +172,9 @@ class DownloadQueue(
 
             // Add main item second as it is (often) the largest and important file
             prepareMainFile(api, downloadWithFiles, itemLocation).let(::add)
+
+            // Add subtitles last as they are optional and shouldn't delay the main item
+            addAll(prepareSubtitleFiles(api, downloadWithFiles, itemLocation))
         }
     }
 
@@ -179,6 +213,33 @@ class DownloadQueue(
                 format = ImageFormat.WEBP,
             ).toUri()
         )
+    }
+
+    private suspend fun prepareSubtitleFiles(
+        api: ApiClient,
+        downloadWithFiles: DownloadFiles,
+        itemLocation: DocumentFile,
+    ): List<QueuedFile> {
+        val item = downloadWithFiles.download.item
+        val mediaSourceId = item.mediaSources?.firstOrNull()?.id ?: return emptyList()
+
+        return externalTextSubtitles(item).map { stream ->
+            val fileName = downloadedSubtitleName(stream.index)
+            QueuedFile(
+                file = createOrUpdateFile(
+                    filter = { it.type == DownloadFileType.SUBTITLE && it.fileName == fileName },
+                    downloadWithFiles = downloadWithFiles,
+                    itemLocation = itemLocation,
+                    type = DownloadFileType.SUBTITLE,
+                    fileName = fileName,
+                ),
+                remoteUri = api.createUrl(
+                    pathTemplate = "/Videos/{itemId}/{mediaSourceId}/Subtitles/{index}/Stream.vtt",
+                    pathParameters = mapOf("itemId" to item.id, "mediaSourceId" to mediaSourceId, "index" to stream.index),
+                    queryParameters = mapOf("copyTimestamps" to true),
+                ).toUri(),
+            )
+        }
     }
 
     private suspend fun createOrUpdateFile(

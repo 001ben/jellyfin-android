@@ -5,6 +5,7 @@ import org.jellyfin.mobile.data.entity.DownloadEntity
 import org.jellyfin.mobile.data.entity.DownloadFileEntity
 import org.jellyfin.mobile.downloads.DownloadFileType
 import org.jellyfin.mobile.downloads.DownloadStatus
+import org.jellyfin.mobile.downloads.downloadedSubtitleName
 import org.jellyfin.mobile.downloads.smart.MAX_OFFLINE_SUBTITLE_BYTES
 import org.jellyfin.mobile.downloads.smart.MAX_SUBTITLE_INDEX
 import org.jellyfin.mobile.downloads.smart.managedSubtitleName
@@ -43,14 +44,23 @@ internal class LocalSubtitleResolver(
         stream: MediaStream,
         files: List<DownloadFileEntity>,
     ): DownloadFileEntity? {
-        val key = "${download.serverId}-${download.userId}-${download.itemId}"
-        if (download.path != "smart-offline/$key" || stream.index !in 0..MAX_SUBTITLE_INDEX) return null
-        val name = managedSubtitleName(key, stream.index)
-        return files.firstOrNull {
-            it.downloadId == download.id && it.type == DownloadFileType.SUBTITLE && it.fileName == name &&
-                it.status == DownloadStatus.DOWNLOADED && it.size in 1..MAX_OFFLINE_SUBTITLE_BYTES &&
-                ownedFile(it, name) && verifyFile(it)
+        if (stream.index !in 0..MAX_SUBTITLE_INDEX) return null
+        if (!download.path.startsWith("smart-offline/")) {
+            return completeSubtitle(download, files, downloadedSubtitleName(stream.index))
         }
+        val key = "${download.serverId}-${download.userId}-${download.itemId}"
+        if (download.path != "smart-offline/$key") return null
+        val name = managedSubtitleName(key, stream.index)
+        return completeSubtitle(download, files, name)?.takeIf { ownedFile(it, name) }
+    }
+
+    private fun completeSubtitle(
+        download: DownloadEntity,
+        files: List<DownloadFileEntity>,
+        name: String,
+    ): DownloadFileEntity? = files.firstOrNull {
+        it.downloadId == download.id && it.type == DownloadFileType.SUBTITLE && it.fileName == name &&
+            it.status == DownloadStatus.DOWNLOADED && it.size in 1..MAX_OFFLINE_SUBTITLE_BYTES && verifyFile(it)
     }
 
     private fun ownedFile(entry: DownloadFileEntity, name: String): Boolean = try {

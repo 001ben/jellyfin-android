@@ -11,6 +11,10 @@ import okhttp3.Callback
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
+import okio.Buffer
+import org.jellyfin.mobile.downloads.smart.MAX_OFFLINE_SUBTITLE_BYTES
+import org.jellyfin.mobile.downloads.smart.SUBTITLE_PREFIX_BYTES
+import org.jellyfin.mobile.downloads.smart.isWebVtt
 import org.jellyfin.sdk.api.client.ApiClient
 import org.jellyfin.sdk.api.client.util.AuthorizationHeaderBuilder
 import java.io.IOException
@@ -121,5 +125,30 @@ class FileDownloader(
         val rangeStart = to.statSize
         val response = download(api, from, rangeStart)
         save(response, to, progressCallback)
+    }
+
+    /** Subtitles always restart, and are validated in memory so only complete WebVTT reaches [to]. */
+    suspend fun downloadSubtitle(
+        api: ApiClient,
+        from: Uri,
+        to: ParcelFileDescriptor,
+    ): Long = withContext(Dispatchers.IO) {
+        ParcelFileDescriptor.AutoCloseOutputStream(to).use { output ->
+            download(api, from).use { response ->
+                val source = response.body?.source() ?: throw IOException("Missing subtitle body")
+                val subtitle = Buffer()
+                while (source.read(subtitle, SUBTITLE_BUFFER_SIZE) != -1L) {
+                    coroutineContext.ensureActive()
+                    if (subtitle.size > MAX_OFFLINE_SUBTITLE_BYTES) throw IOException("Subtitle is too large")
+                }
+                val prefix = subtitle.peek().readUtf8(minOf(subtitle.size, SUBTITLE_PREFIX_BYTES.toLong()))
+                if (!isWebVtt(prefix)) throw IOException("Invalid subtitle format")
+                subtitle.size.also { subtitle.writeTo(output) }
+            }
+        }
+    }
+
+    private companion object {
+        const val SUBTITLE_BUFFER_SIZE = 8192L
     }
 }

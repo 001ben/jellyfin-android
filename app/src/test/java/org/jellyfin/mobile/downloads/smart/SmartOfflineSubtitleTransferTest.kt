@@ -130,7 +130,7 @@ class SmartOfflineSubtitleTransferTest {
             mediaSources = listOf(source, subtitleFixtureSource())
         )
         val entry = SmartOfflineManaged("1-2-${item.id}", "1-2", item)
-        assertEquals(listOf(0), externalTextSubtitles(entry).map { it.index })
+        assertEquals(listOf(0), externalTextSubtitles(item).map { it.index })
         assertThrows(IllegalArgumentException::class.java) { managedSubtitleName("../other", 0) }
         assertThrows(IllegalArgumentException::class.java) { managedSubtitleName(entry.key, -1) }
     }
